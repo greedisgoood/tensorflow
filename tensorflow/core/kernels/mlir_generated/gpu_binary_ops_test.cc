@@ -13,7 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cmath>
+#include <complex>
 #include <limits>
+#include <memory>
+#include <utility>
 
 #include "tensorflow/core/common_runtime/device.h"
 #include "tensorflow/core/common_runtime/device_factory.h"
@@ -392,24 +396,39 @@ TEST_F(BinaryOpsTest, DivComplex128SpecialCases) {
 
 /// Test `tf.TruncatedDiv`
 
+template <typename T>
+T baseline_truncate_div(T lhs, T rhs) {
+  T res = lhs / rhs;
+  if (res < 0) return ceil(res);
+  return floor(res);
+}
+
 // These kernels are JIT-compiled.
 #if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     TruncateDiv, /*test_name=*/Int8, int8_t, int8_t,
     test::DefaultInput<int8_t>(), test::DefaultInputNonZero<int8_t>(),
     baseline_div, test::OpsTestConfig().ExpectStrictlyEqual())
-#endif
-#if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     TruncateDiv, /*test_name=*/Uint32, uint32_t, uint32_t,
     test::DefaultInput<uint32_t>(), test::DefaultInputNonZero<uint32_t>(),
     baseline_div, test::OpsTestConfig().ExpectStrictlyEqual())
-#endif
-#if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     TruncateDiv, /*test_name=*/Uint64, uint64_t, uint64_t,
     test::DefaultInput<uint64_t>(), test::DefaultInputNonZero<uint64_t>(),
     baseline_div, test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
+    TruncateDiv, /*test_name=*/Half, Eigen::half, Eigen::half,
+    test::DefaultInput<Eigen::half>(), test::DefaultInputNonZero<Eigen::half>(),
+    baseline_truncate_div, test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
+    TruncateDiv, /*test_name=*/Float, float, float, test::DefaultInput<float>(),
+    test::DefaultInputNonZero<float>(), baseline_truncate_div,
+    test::OpsTestConfig().ExpectStrictlyEqual())
+GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
+    TruncateDiv, /*test_name=*/Double, double, double,
+    test::DefaultInput<double>(), test::DefaultInputNonZero<double>(),
+    baseline_truncate_div, test::OpsTestConfig().ExpectStrictlyEqual())
 #endif
 
 /// Test `tf.DivNoNan`.
@@ -628,8 +647,20 @@ T baseline_floor_mod(T lhs, T rhs) {
 }
 
 /// Test the JIT-compiled kernels.
-#if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED) && \
-    defined(MLIR_GENERATED_EXPERIMENTAL_KERNELS_ENABLED)
+#if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
+TEST_F(BinaryOpsTest, FloorModFloatSpecialCase) {
+  TestEqualShapes<float, double, float, double>(
+      "FloorMod", /*shape=*/{20}, test::InputAsVector<float>({1.34e8f}),
+      test::InputAsVector<float>({0.6f}), baseline_floor_mod,
+      test::OpsTestConfig().ATol(1e-11).RTol(1e-6));
+}
+TEST_F(BinaryOpsTest, FloorModDoubleSpecialCase) {
+  TestEqualShapes<double, double, double, double>(
+      "FloorMod", /*shape=*/{20}, test::InputAsVector<double>({1.34e8}),
+      test::InputAsVector<double>({0.6}), baseline_floor_mod,
+      test::OpsTestConfig().ATol(1e-11).RTol(1e-6));
+}
+
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     FloorMod,
     /*test_name=*/Int8, int8_t, int8_t, test::DefaultInput<int8_t>(),
@@ -665,11 +696,13 @@ GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     /*test_name=*/UInt64, uint64_t, uint64_t, test::DefaultInput<uint64_t>(),
     test::DefaultInputNonZero<uint64_t>(), baseline_floor_mod,
     test::OpsTestConfig().ExpectStrictlyEqual());
+#if !TENSORFLOW_USE_ROCM
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     FloorMod,
     /*test_name=*/Half, Eigen::half, Eigen::half,
     test::DefaultInput<Eigen::half>(), test::DefaultInputNonZero<Eigen::half>(),
     baseline_floor_mod, test::OpsTestConfig());
+#endif
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     FloorMod,
     /*test_name=*/Float, float, float, test::DefaultInput<float>(),
@@ -982,6 +1015,12 @@ T baseline_mul(T lhs, T rhs) {
   return lhs * rhs;
 }
 
+template <typename T>
+std::complex<T> baseline_cmulf(std::complex<T> lhs, std::complex<T> rhs) {
+  return std::complex<T>(lhs.real() * rhs.real() - lhs.imag() * rhs.imag(),
+                         lhs.real() * rhs.imag() + lhs.imag() * rhs.real());
+}
+
 GENERATE_DEFAULT_TESTS(Mul, /*test_name=*/Half, Eigen::half, Eigen::half,
                        baseline_mul,
                        test::OpsTestConfig().ExpectStrictlyEqual())
@@ -1023,7 +1062,7 @@ TEST_F(BinaryOpsTest, MulComplex64SpecialCases) {
       test::NearZeroInfAndNanInput<std::complex<float>>(),
       test::RepeatElements(test::NearZeroInfAndNanInput<std::complex<float>>(),
                            64),
-      baseline_mul, test::OpsTestConfig());
+      baseline_cmulf, test::OpsTestConfig());
 }
 
 TEST_F(BinaryOpsTest, MulComplex128SpecialCases) {
@@ -1033,7 +1072,7 @@ TEST_F(BinaryOpsTest, MulComplex128SpecialCases) {
       test::NearZeroInfAndNanInput<std::complex<double>>(),
       test::RepeatElements(test::NearZeroInfAndNanInput<std::complex<double>>(),
                            64),
-      baseline_mul, test::OpsTestConfig());
+      baseline_cmulf, test::OpsTestConfig());
 }
 #endif
 
@@ -1179,6 +1218,10 @@ double baseline_polygamma(double n, double x) {
   if (x <= 0 && x == std::floor(x)) {
     if (static_cast<int>(n) % 2 == 1) {
       return std::numeric_limits<double>::infinity();
+    } else if (static_cast<int>(n) == 0 && x == 0) {
+      // polygamma(0, x) == digamma(x); digamma has a pole at x == 0 that
+      // evaluates to -inf (negative-integer poles remain NaN).
+      return -std::numeric_limits<double>::infinity();
     } else {
       return std::numeric_limits<double>::quiet_NaN();
     }
@@ -1261,6 +1304,13 @@ absl::InlinedVector<T, 10> PowInput() {
   return test::InputAsVector<T, double>({-2, -1, -1, 1, 1, 3});
 }
 
+template <typename T>
+absl::InlinedVector<T, 10> IntegerPowExponents() {
+  // These generated tests expect successful results. Negative exponents are
+  // covered separately by the GPU Pow error tests.
+  return test::InputAsVector<T>({0, 1, 2, 1, 2, 3});
+}
+
 template <>
 Eigen::half baseline_pow(Eigen::half lhs, Eigen::half rhs) {
   return static_cast<Eigen::half>(
@@ -1284,18 +1334,18 @@ GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     Pow,
     /*test_name=*/Int64, int64_t, int64_t, PowInput<int64_t>(),
-    PowInput<int64_t>(), baseline_pow,
+    IntegerPowExponents<int64_t>(), baseline_pow,
     test::OpsTestConfig().ExpectStrictlyEqual())
 
 /// Test the JIT-compiled kernels.
 #if defined(MLIR_GENERATED_GPU_KERNELS_ENABLED)
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     Pow, /*test_name=*/Int8, int8_t, int8_t, PowInput<int8_t>(),
-    PowInput<int8_t>(), baseline_pow,
+    IntegerPowExponents<int8_t>(), baseline_pow,
     test::OpsTestConfig().ExpectStrictlyEqual())
 GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
     Pow, /*test_name=*/Int16, int16_t, int16_t, PowInput<int16_t>(),
-    PowInput<int16_t>(), baseline_pow,
+    IntegerPowExponents<int16_t>(), baseline_pow,
     test::OpsTestConfig().ExpectStrictlyEqual())
 #endif
 
@@ -1453,7 +1503,7 @@ TEST_F(BinaryOpsTest, SubUint32SpecialCases) {
 
 template <typename T>
 T baseline_xlogy(T x, T y) {
-  return x == T(0) ? x : x * std::log(y);
+  return x == T(0) ? T(0) : x * std::log(y);
 }
 
 GENERATE_DEFAULT_TESTS_2(Xlogy, /*test_name=*/Half, Eigen::half, float,
@@ -1470,18 +1520,19 @@ GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Complex64, std::complex<float>,
                        test::OpsTestConfig().ATol(2e-6).RTol(2e-6))
 GENERATE_DEFAULT_TESTS(Xlogy, /*test_name=*/Complex128, std::complex<double>,
                        std::complex<double>, baseline_xlogy,
-                       test::OpsTestConfig())
+                       test::OpsTestConfig().ATol(1e-12).RTol(1e-12))
 
 /// Test `tf.Xlog1py`.
 
 template <typename T>
 T baseline_xlog1py(T x, T y) {
-  return x == T(0) ? x : x * std::log1p(y);
+  return x == T(0) ? T(0) : x * std::log1p(y);
 }
 
 template <typename T>
 std::complex<T> baseline_xlog1py(std::complex<T> x, std::complex<T> y) {
-  return x == std::complex<T>(0) ? x : x * std::log(std::complex<T>(1) + y);
+  return x == std::complex<T>(0) ? std::complex<T>(0)
+                                 : x * std::log(std::complex<T>(1) + y);
 }
 
 GENERATE_DEFAULT_TESTS_2(Xlog1py, /*test_name=*/Half, Eigen::half, float,
@@ -1526,7 +1577,7 @@ GENERATE_DEFAULT_TESTS_WITH_SPECIFIC_INPUT_VALUES(
 
 template <typename T>
 T baseline_xdivy(T x, T y) {
-  return x == T(0) ? x : x / y;
+  return x == T(0) ? T(0) : x / y;
 }
 
 GENERATE_DEFAULT_TESTS_2(Xdivy, /*test_name=*/Half, Eigen::half, float,

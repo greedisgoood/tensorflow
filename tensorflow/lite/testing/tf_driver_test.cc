@@ -14,12 +14,20 @@ limitations under the License.
 ==============================================================================*/
 #include "tensorflow/lite/testing/tf_driver.h"
 
-#include <algorithm>
+#include <cstdint>
+#include <cstdlib>
+#include <memory>
 #include <string>
+#include <vector>
 
-#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/strings/escaping.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
+#include "tensorflow/core/framework/tensor.h"
+#include "tensorflow/core/framework/tensor_shape.h"
+#include "tensorflow/core/framework/types.pb.h"
+#include "tensorflow/lite/string_type.h"
 #include "tensorflow/lite/string_util.h"
 
 namespace tflite {
@@ -35,7 +43,7 @@ class TestDriver : public TfDriver {
                           const string& values) {
     tensorflow::Tensor t = {
         type,
-        tensorflow::TensorShape{tensorflow::gtl::ArraySlice<int64_t>{
+        tensorflow::TensorShape{absl::Span<const int64_t>{
             reinterpret_cast<const int64_t*>(shape.data()), shape.size()}}};
     SetInput(values, &t);
     return ReadOutput(t);

@@ -21,6 +21,7 @@ limitations under the License.
 
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/register_types.h"
+#include "tensorflow/core/kernels/sparse_utils.h"
 #include "tensorflow/core/util/sparse/sparse_tensor.h"
 
 namespace tensorflow {
@@ -80,42 +81,49 @@ void SparseSplitOpImpl(OpKernelContext* context, int num_split,
   const Tensor& input_shape = context->input(3);
 
   OP_REQUIRES_ASYNC(context, TensorShapeUtils::IsScalar(input_axis.shape()),
-                    errors::InvalidArgument(
+                    absl::InvalidArgumentError(absl::StrCat(
                         "Input axis should be a scalar but received shape ",
-                        input_axis.shape().DebugString()),
+                        input_axis.shape().DebugString())),
                     done);
   OP_REQUIRES_ASYNC(context, TensorShapeUtils::IsMatrix(input_indices.shape()),
-                    errors::InvalidArgument(
+                    absl::InvalidArgumentError(absl::StrCat(
                         "Input indices should be a matrix but received shape ",
-                        input_indices.shape().DebugString()),
+                        input_indices.shape().DebugString())),
                     done);
   OP_REQUIRES_ASYNC(context, TensorShapeUtils::IsVector(input_values.shape()),
-                    errors::InvalidArgument(
+                    absl::InvalidArgumentError(absl::StrCat(
                         "Input values should be a vector but received shape ",
-                        input_indices.shape().DebugString()),
+                        input_indices.shape().DebugString())),
                     done);
   OP_REQUIRES_ASYNC(context, TensorShapeUtils::IsVector(input_shape.shape()),
-                    errors::InvalidArgument(
+                    absl::InvalidArgumentError(absl::StrCat(
                         "Input shape should be a vector but received shape ",
-                        input_shape.shape().DebugString()),
+                        input_shape.shape().DebugString())),
                     done);
+  OP_REQUIRES_OK_ASYNC(context,
+                       sparse_utils::ValidateSparseTensor<int64_t>(
+                           input_indices, input_values, input_shape,
+                           std::is_same_v<Device, CPUDevice>
+                               ? sparse_utils::IndexValidation::kUnordered
+                               : sparse_utils::IndexValidation::kNone),
+                       done);
 
   const int64_t axis_input = input_axis.scalar<int64_t>()();
   const int64_t input_rank = input_shape.vec<int64_t>().size();
   const int64_t axis = (axis_input < 0) ? input_rank + axis_input : axis_input;
 
-  OP_REQUIRES_ASYNC(
-      context, axis >= 0 && axis < input_rank,
-      errors::InvalidArgument("Input axis should be in range [", -input_rank,
-                              ", ", input_rank, "), got ", axis_input),
-      done);
+  OP_REQUIRES_ASYNC(context, axis >= 0 && axis < input_rank,
+                    absl::InvalidArgumentError(absl::StrCat(
+                        "Input axis should be in range [", -input_rank, ", ",
+                        input_rank, "), got ", axis_input)),
+                    done);
 
   OP_REQUIRES_ASYNC(
       context, num_split >= 1 && num_split <= input_shape.vec<int64_t>()(axis),
-      errors::InvalidArgument("Input num_split should be between 1 "
-                              "and the splitting dimension size (",
-                              input_shape.vec<int64_t>()(axis), "), got ",
-                              num_split),
+      absl::InvalidArgumentError(
+          absl::StrCat("Input num_split should be between 1 "
+                       "and the splitting dimension size (",
+                       input_shape.vec<int64_t>()(axis), "), got ", num_split)),
       done);
 
   // Prevent overflow by constructing the dense shape separately
@@ -154,5 +162,41 @@ class SparseSplitOp : public OpKernel {
 
 TF_CALL_ALL_TYPES(REGISTER_KERNELS);
 #undef REGISTER_KERNELS
+
+#if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
+
+typedef Eigen::GpuDevice GPUDevice;
+
+// The GPU implementation is async because it requires waiting for a
+// host->device memcpy before the output is allocated (similar to
+// SegmentSumGPUOp).
+template <typename T>
+class SparseSplitGPUOp : public AsyncOpKernel {
+ public:
+  explicit SparseSplitGPUOp(OpKernelConstruction* context)
+      : AsyncOpKernel(context) {
+    OP_REQUIRES_OK(context, context->GetAttr("num_split", &num_split_));
+  }
+
+  void ComputeAsync(OpKernelContext* context, DoneCallback done) override {
+    SparseSplitOpImpl<GPUDevice, T>(context, num_split_, done);
+  }
+
+ private:
+  int num_split_;
+};
+
+#define REGISTER_KERNELS(type)                            \
+  REGISTER_KERNEL_BUILDER(Name("SparseSplit")             \
+                              .Device(DEVICE_GPU)         \
+                              .HostMemory("split_dim")    \
+                              .HostMemory("shape")        \
+                              .HostMemory("output_shape") \
+                              .TypeConstraint<type>("T"), \
+                          SparseSplitGPUOp<type>)
+TF_CALL_POD_TYPES(REGISTER_KERNELS);
+#undef REGISTER_KERNELS
+
+#endif  // GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 
 }  // namespace tensorflow

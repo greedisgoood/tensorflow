@@ -13,10 +13,11 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
-#include <cmath>
+#include <algorithm>
+#include <cstddef>
 #include <random>
 
-#include "tensorflow/lite/c/common.h"
+#include "tensorflow/lite/core/c/common.h"
 #include "tensorflow/lite/kernels/internal/tensor_ctypes.h"
 #include "tensorflow/lite/kernels/kernel_util.h"
 
@@ -63,7 +64,7 @@ TfLiteStatus Prepare(TfLiteContext* context, TfLiteNode* node) {
   TF_LITE_ENSURE_EQ(context, shape->type, kTfLiteInt32);
   TF_LITE_ENSURE_EQ(context, NumDimensions(shape), 1);
   TfLiteTensor* output = GetOutput(context, node, kOutputTensor);
-  if (!IsConstantTensor(shape)) {
+  if (!IsConstantOrPersistentTensor(shape)) {
     SetTensorToDynamic(output);
     return kTfLiteOk;
   }

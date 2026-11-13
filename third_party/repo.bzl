@@ -54,6 +54,15 @@ def _tf_http_archive_impl(ctx):
     # See also https://github.com/bazelbuild/bazel/issues/10515.
     link_dict = _get_link_dict(ctx, ctx.attr.link_files, ctx.attr.build_file)
 
+    # For some reason, we need to "resolve" labels once before the
+    # download_and_extract otherwise it'll invalidate and re-download the
+    # archive each time.
+    # https://github.com/bazelbuild/bazel/issues/10515
+    patch_files = ctx.attr.patch_file
+    for patch_file in patch_files:
+        if patch_file:
+            ctx.path(Label(patch_file))
+
     if _use_system_lib(ctx, ctx.attr.name):
         link_dict.update(_get_link_dict(
             ctx = ctx,
@@ -67,12 +76,16 @@ def _tf_http_archive_impl(ctx):
             type = ctx.attr.type,
             stripPrefix = ctx.attr.strip_prefix,
         )
-        patch_files = ctx.attr.patch_file
         if patch_files:
             for patch_file in patch_files:
                 patch_file = ctx.path(Label(patch_file)) if patch_file else None
                 if patch_file:
                     ctx.patch(patch_file, strip = 1)
+
+        for cmd in ctx.attr.patch_cmds:
+            res = ctx.execute(["bash", "-c", cmd])
+            if res.return_code != 0:
+                fail("patch_cmds failed: %s\n%s" % (cmd, res.stderr))
 
     for dst, src in link_dict.items():
         ctx.delete(dst)
@@ -86,6 +99,7 @@ _tf_http_archive = repository_rule(
         "strip_prefix": attr.string(),
         "type": attr.string(),
         "patch_file": attr.string_list(),
+        "patch_cmds": attr.string_list(default = []),
         "build_file": attr.string(),
         "system_build_file": attr.string(),
         "link_files": attr.string_dict(),
@@ -131,3 +145,17 @@ def tf_http_archive(name, sha256, urls, **kwargs):
         urls = urls,
         **kwargs
     )
+
+def _tf_vendored_impl(ctx):
+    ctx.symlink(ctx.path(ctx.attr._root).dirname.get_child(ctx.attr.path), ".")
+
+tf_vendored = repository_rule(
+    implementation = _tf_vendored_impl,
+    doc = "Similar to local_repository, but path is relative to the root of the " +
+          "repository, not the root of the workspace.",
+    attrs = {
+        "_root": attr.label(default = "//:unused"),
+        "path": attr.string(),
+    },
+    local = True,
+)

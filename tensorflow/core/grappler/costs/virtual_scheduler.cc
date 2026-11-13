@@ -20,6 +20,9 @@ limitations under the License.
 #include <string>
 #include <utility>
 
+#include "absl/base/attributes.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
 #include "absl/strings/str_replace.h"
 #include "tensorflow/core/framework/allocation_description.pb.h"
@@ -41,12 +44,12 @@ limitations under the License.
 namespace tensorflow {
 namespace grappler {
 
-const char kAttrInputSrc[] = "input_source_";
-const char kAttrSrcDevice[] = "send_device";
-const char kAttrDstDevice[] = "recv_device";
-const char kAttrTensorName[] = "tensor_name";
-const char kChannelDevice[] = "Channel";
-const char kStreaming[] = "_streaming";
+ABSL_CONST_INIT const char kAttrInputSrc[] = "input_source_";
+ABSL_CONST_INIT const char kAttrSrcDevice[] = "send_device";
+ABSL_CONST_INIT const char kAttrDstDevice[] = "recv_device";
+ABSL_CONST_INIT const char kAttrTensorName[] = "tensor_name";
+ABSL_CONST_INIT const char kChannelDevice[] = "Channel";
+ABSL_CONST_INIT const char kStreaming[] = "_streaming";
 
 namespace {
 
@@ -58,8 +61,8 @@ float Round2(const float x) {
   return ::round(100.0 * x) / 100.0;
 }
 
-Costs& FindOrCreateZero(const string& op_name,
-                        std::map<string, Costs>* op_cost) {
+Costs& FindOrCreateZero(const std::string& op_name,
+                        std::map<std::string, Costs>* op_cost) {
   auto it = op_cost->find(op_name);
   if (it == op_cost->end()) {
     // Note that default constructor of Costs sets some memory related fields
@@ -73,10 +76,10 @@ Costs& FindOrCreateZero(const string& op_name,
 struct RecvNodeDescriptor {
   const NodeDef* node;
   const int port_num;
-  const string device;
+  const std::string device;
 
   RecvNodeDescriptor(const NodeDef* node_, const int port_num_,
-                     const string& device_)
+                     const std::string& device_)
       : node(node_), port_num(port_num_), device(device_) {}
 };
 
@@ -84,7 +87,7 @@ struct RecvNodeDescriptorHash {
   std::size_t operator()(const RecvNodeDescriptor& recv_node) const {
     return std::hash<const NodeDef*>()(recv_node.node) ^
            std::hash<int>()(recv_node.port_num) ^
-           std::hash<string>()(recv_node.device);
+           std::hash<std::string>()(recv_node.device);
   }
 };
 
@@ -167,7 +170,7 @@ HeapReadyManager::HeapReadyManager() : ReadyNodeManager() {
   std::make_heap(nodes_.begin(), nodes_.end());
 }
 
-Status HeapReadyManager::Init(
+absl::Status HeapReadyManager::Init(
     const std::unordered_map<const NodeDef*, NodeState>* node_map) {
   // Resets the node state since different instances of the scheduler can reuse
   // the same node_manager.
@@ -178,7 +181,7 @@ Status HeapReadyManager::Init(
   // Sets up the comparator for the heap.
   greater_ = Greater();
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void HeapReadyManager::AddNode(const NodeDef* node) {
@@ -264,22 +267,22 @@ void PriorityReadyManager::AddNode(const NodeDef* node) {
   HeapReadyManager::AddNode(node);
 }
 
-Status PriorityReadyManager::SetPriority(
-    const std::unordered_map<string, int>& node_priority) {
+absl::Status PriorityReadyManager::SetPriority(
+    const std::unordered_map<std::string, int>& node_priority) {
   node_priority_ = node_priority;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 CompositeNodeManager::CompositeNodeManager()
     : ReadyNodeManager(), send_manager_(), recv_manager_() {}
 
-Status CompositeNodeManager::Init(
+absl::Status CompositeNodeManager::Init(
     const std::unordered_map<const NodeDef*, NodeState>* node_map) {
   node_map_ = node_map;
   TF_RETURN_IF_ERROR(send_manager_.Init(node_map));
   TF_RETURN_IF_ERROR(recv_manager_.Init(node_map));
   curr_node_ = nullptr;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void CompositeNodeManager::AddNode(const NodeDef* node) {
@@ -370,15 +373,15 @@ bool CompositeNodeManager::Empty() const {
 }
 
 std::unique_ptr<ReadyNodeManager> ReadyNodeManagerFactory(
-    const string& ready_node_manager) {
+    const std::string& ready_node_manager) {
   if (ready_node_manager == "FIFO") {
-    return absl::make_unique<FIFOManager>();
+    return std::make_unique<FIFOManager>();
   } else if (ready_node_manager == "LIFO") {
-    return absl::make_unique<LIFOManager>();
+    return std::make_unique<LIFOManager>();
   } else if (ready_node_manager == "FirstReady") {
-    return absl::make_unique<FirstReadyManager>();
+    return std::make_unique<FirstReadyManager>();
   } else if (ready_node_manager == "Composite") {
-    return absl::make_unique<CompositeNodeManager>();
+    return std::make_unique<CompositeNodeManager>();
   }
   LOG(FATAL) << "Not a valid ready node manager: " << ready_node_manager;
   return nullptr;
@@ -401,9 +404,9 @@ SchedulerState::SchedulerState(const bool use_static_shapes,
   track_mem_usage_snapshot_ = VLOG_IS_ON(1);
 }
 
-Status SchedulerState::Init(const GrapplerItem* item,
-                            std::vector<const NodeDef*>* initial_nodes,
-                            bool create_explicit_channel_device) {
+absl::Status SchedulerState::Init(const GrapplerItem* item,
+                                  std::vector<const NodeDef*>* initial_nodes,
+                                  bool create_explicit_channel_device) {
   initialized_ = false;
 
   // Clear all internal states so that the SchedulerState is reusable for
@@ -422,7 +425,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   initial_nodes->clear();
 
   // Constructs graph properties and performs shape inference.
-  graph_properties_ = absl::make_unique<GraphProperties>(*item);
+  graph_properties_ = std::make_unique<GraphProperties>(*item);
   // TODO(safeen,dyoon): Will we ever use InferDynamically? If not we may want
   // to get rid of use_static_shapes_ and cluster_.
   if (use_static_shapes_) {
@@ -435,7 +438,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   grappler_item_ = item;
   const auto& graph = grappler_item_->graph;
   const auto& fetch_nodes = grappler_item_->fetch;
-  std::set<string> feed_nodes;
+  std::set<std::string> feed_nodes;
 
   for (const auto& f : grappler_item_->feed) {
     auto iter_and_inserted_flag = feed_nodes.insert(f.first);
@@ -444,7 +447,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   }
 
   // Get the nodes that would run to output fetch_nodes.
-  std::unordered_map<string, const NodeDef*> name_to_node;
+  std::unordered_map<std::string, const NodeDef*> name_to_node;
   std::vector<const NodeDef*> fetch_fanin_nodes;
   TF_RETURN_IF_ERROR(ComputeTransitiveFanin(graph, fetch_nodes, &name_to_node,
                                             &fetch_fanin_nodes));
@@ -457,7 +460,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   // Traverses the graph to record _Send nodes.
   // TODO(dyoon): Instead of identifying _Send node here manually, add _Send
   // to _Recv as control dependency when creating GrapplerItem.
-  std::unordered_map<string, const NodeDef*> name_to_send;
+  std::unordered_map<std::string, const NodeDef*> name_to_send;
   for (const auto& node : graph.node()) {
     if (IsSend(node)) {
       const auto& attr = node.attr();
@@ -474,8 +477,8 @@ Status SchedulerState::Init(const GrapplerItem* item,
   // and outputs.
   for (const auto* curr_node : fetch_fanin_nodes) {
     auto& curr_node_state = GetNodeStateOrCreateIt(curr_node);
-    const string curr_node_device = DeviceName(curr_node);
-    std::vector<string> inputs;
+    const std::string curr_node_device = DeviceName(curr_node);
+    std::vector<std::string> inputs;
     if (IsRecv(*curr_node)) {
       const auto& attr = curr_node->attr();
       if (attr.count("tensor_name")) {
@@ -489,18 +492,22 @@ Status SchedulerState::Init(const GrapplerItem* item,
         }
       }
     } else {
-      for (const string& input : curr_node->input()) {
+      for (const std::string& input : curr_node->input()) {
         inputs.push_back(input);
       }
     }
-    for (const string& input_node_name : inputs) {
+    for (const std::string& input_node_name : inputs) {
       // Note that input_node_name may be in <prefix><node_name>:<port_num>
       // format, where <prefix> (e.g., "^" for control dependency) and
       // ":<port_num>" may be omitted. NodeName() extracts only the node_name.
-      const NodeDef* input_node = name_to_node[NodeName(input_node_name)];
+      const std::string node_name = NodeName(input_node_name);
+      const NodeDef* input_node = name_to_node[node_name];
+      if (input_node == nullptr) {
+        return absl::InvalidArgumentError(
+            absl::StrCat("Unknown node: ", node_name));
+      }
 
-      CHECK(input_node);
-      const string in_device = DeviceName(input_node);
+      const std::string in_device = DeviceName(input_node);
       const auto input_node_port_num = NodePosition(input_node_name);
 
       // Control dependencies should be treated as high priority. Current
@@ -575,7 +582,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   }
 
   if (initial_nodes->empty()) {
-    return errors::InvalidArgument("No ready nodes in the graph.");
+    return absl::InvalidArgumentError("No ready nodes in the graph.");
   }
 
   if (!feed_nodes.empty()) {
@@ -587,7 +594,7 @@ Status SchedulerState::Init(const GrapplerItem* item,
   }
 
   initialized_ = true;
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 void SchedulerState::MaybeUpdateInputOutput(const NodeDef* node) {
@@ -639,19 +646,19 @@ void SchedulerState::MaybeUpdateInputOutput(const NodeDef* node) {
   }
 }
 
-string SchedulerState::DeviceName(const NodeDef* node) const {
+std::string SchedulerState::DeviceName(const NodeDef* node) const {
   return placer_->get_canonical_device_name(*node);
 }
 
-string SchedulerState::SanitizedDeviceName(const NodeDef* node) const {
+std::string SchedulerState::SanitizedDeviceName(const NodeDef* node) const {
   // Replace the ":" characters that may be present in the device name with "_".
   // This makes it possible to then use the resulting string in a node name.
   return absl::StrReplaceAll(placer_->get_canonical_device_name(*node),
                              {{":", "_"}});
 }
 
-string SchedulerState::ChannelDeviceName(const NodeDef* from,
-                                         const NodeDef* to) const {
+std::string SchedulerState::ChannelDeviceName(const NodeDef* from,
+                                              const NodeDef* to) const {
   CHECK(!initialized_) << "ChannelDeviceName is called after Init().";
   return absl::StrCat(kChannelDevice, "_from_", SanitizedDeviceName(from),
                       "_to_", SanitizedDeviceName(to));
@@ -659,7 +666,7 @@ string SchedulerState::ChannelDeviceName(const NodeDef* from,
 
 std::pair<const NodeDef*, const NodeDef*> SchedulerState::CreateSendRecv(
     const NodeDef* from, const NodeDef* to, const NodeDef* input_node,
-    const string& input_name, bool create_channel_device) {
+    const std::string& input_name, bool create_channel_device) {
   CHECK(!initialized_) << "CreateSendRecv is called after Init().";
 
   // Connect "from" node to "to" node with _Send and _Recv such that
@@ -674,7 +681,7 @@ std::pair<const NodeDef*, const NodeDef*> SchedulerState::CreateSendRecv(
   // input names, attrs, etc.
 
   auto input_node_port_num = NodePosition(input_name);
-  string src_name;
+  std::string src_name;
   bool control_input = false;
   if (input_node_port_num >= 0) {
     src_name = absl::StrCat(from->name(), "_", input_node_port_num);
@@ -898,14 +905,14 @@ std::vector<const NodeDef*> SchedulerState::MarkNodeExecuted(
   Costs total_node_costs = node_state.TotalNodeCosts();
 
   graph_costs_ = CombineCosts(graph_costs_, total_node_costs);
-  const string& op_name = node->op();
+  const std::string& op_name = node->op();
 
   auto& op_cost = FindOrCreateZero(op_name, &op_to_cost_);
   op_cost = CombineCosts(op_cost, total_node_costs);
 
   if (VLOG_IS_ON(2)) {
     // Also keep track of op counts and costs per op (with their shapes).
-    string node_description = GetOpDescription(op_context.op_info);
+    std::string node_description = GetOpDescription(op_context.op_info);
     op_counts_[node_description] += 1;
     op_costs_[node_description] =
         std::make_pair(total_node_costs.execution_time.asMicroSeconds().count(),
@@ -1088,7 +1095,7 @@ Costs SchedulerState::Summary() const {
   // Print per device summary
   VLOG(1) << "Devices:";
   Costs critical_path_costs = Costs::ZeroCosts();
-  std::vector<string> device_names;
+  std::vector<std::string> device_names;
   device_names.reserve(device_.size());
   for (auto& it : device_) {
     device_names.push_back(it.first);
@@ -1098,10 +1105,10 @@ Costs SchedulerState::Summary() const {
   for (const auto& name : device_names) {
     const auto& state = device_.at(name);
 
-    std::map<string, int64_t> op_to_memory;
+    std::map<std::string, int64_t> op_to_memory;
     // First profile only persistent memory usage.
     int64_t persistent_memory_usage = 0;
-    std::set<string> persistent_ops;
+    std::set<std::string> persistent_ops;
     for (const auto& node_port : state.persistent_nodes) {
       const auto* node = node_port.first;
       const auto port = node_port.second;
@@ -1257,7 +1264,7 @@ void SchedulerState::GenerateRunMetadata(RunMetadata* metadata) {
       }
       const NodeState& nodestate = node_map_.at(node_def);
       NodeExecStats* node_stats = device_stepstats->add_node_stats();
-      uint64 total_output_size = 0;
+      uint64_t total_output_size = 0;
       uint64_t persistent_output_size = 0;
       for (int slot = 0, slot_end = nodestate.output_properties.size();
            slot < slot_end; slot++) {
@@ -1285,7 +1292,7 @@ void SchedulerState::GenerateRunMetadata(RunMetadata* metadata) {
         node_stats->set_timeline_label(node_def->op());
       } else {
         // For HloGenericOp, display hlo_opcode as timeline label.
-        string timeline_label;
+        std::string timeline_label;
         if (node_def->attr().count("hlo_opcode") > 0) {
           absl::StrAppend(&timeline_label,
                           node_def->attr().at("hlo_opcode").s());
@@ -1330,22 +1337,22 @@ void SchedulerState::GenerateRunMetadata(RunMetadata* metadata) {
   }
 }
 
-const std::unordered_map<string, int64_t> SchedulerState::GetPeakMemoryUsage()
-    const {
-  std::unordered_map<string, int64_t> result;
+const std::unordered_map<std::string, int64_t>
+SchedulerState::GetPeakMemoryUsage() const {
+  std::unordered_map<std::string, int64_t> result;
   for (const auto& device : device_) {
-    const string& name = device.first;
+    const std::string& name = device.first;
     const DeviceState& state = device.second;
     result[name] = state.max_memory_usage;
   }
   return result;
 }
 
-const std::unordered_map<string, int64_t>
+const std::unordered_map<std::string, int64_t>
 SchedulerState::GetPersistentMemoryUsage() const {
-  std::unordered_map<string, int64_t> result;
+  std::unordered_map<std::string, int64_t> result;
   for (const auto& device : device_) {
-    const string& name = device.first;
+    const std::string& name = device.first;
     const DeviceState& state = device.second;
     int64_t persistent_memory_usage = 0;
     for (const auto& node_port : state.persistent_nodes) {
@@ -1382,7 +1389,7 @@ VirtualScheduler::VirtualScheduler(const bool use_static_shapes,
                                    Cluster* cluster,
                                    ReadyNodeManager* ready_nodes,
                                    std::unique_ptr<VirtualPlacer> placer)
-    : scheduler_state_(absl::make_unique<SchedulerState>(
+    : scheduler_state_(std::make_unique<SchedulerState>(
           use_static_shapes, use_aggressive_shape_inference, cluster,
           std::move(placer))),
       ready_nodes_(ready_nodes) {}
@@ -1392,7 +1399,7 @@ VirtualScheduler::VirtualScheduler(
     std::unique_ptr<SchedulerState> scheduler_state)
     : scheduler_state_(std::move(scheduler_state)), ready_nodes_(ready_nodes) {}
 
-Status VirtualScheduler::Init(const GrapplerItem* item) {
+absl::Status VirtualScheduler::Init(const GrapplerItem* item) {
   // SchedulerState::Init() preprocesses the input grappler_item and
   // graph_properties to extract necessary information for emulating tensorflow
   // op scheduling and construct internal data structures (NodeState and

@@ -34,7 +34,7 @@ class AbstractContext {
  protected:
   enum AbstractContextKind { kGraph, kMlir, kEager, kTfrt, kTape, kOpHandler };
   explicit AbstractContext(AbstractContextKind kind) : kind_(kind) {}
-  virtual ~AbstractContext() {}
+  virtual ~AbstractContext() = default;
 
  public:
   AbstractContextKind getKind() const { return kind_; }
@@ -55,10 +55,10 @@ class AbstractContext {
 
   // Registers a function with this context, after this the function is
   // available to be called/referenced by its name in this context.
-  virtual Status RegisterFunction(AbstractFunction*) = 0;
+  virtual absl::Status RegisterFunction(AbstractFunction*) = 0;
   // Remove a function. 'func' argument is the name of a previously added
   // FunctionDef. The name is in fdef.signature.name.
-  virtual Status RemoveFunction(const string& func) = 0;
+  virtual absl::Status RemoveFunction(const std::string& func) = 0;
 
  private:
   const AbstractContextKind kind_;

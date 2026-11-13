@@ -15,58 +15,64 @@ limitations under the License.
 
 #include "tensorflow/compiler/mlir/tensorflow/utils/error_util.h"
 
-#include "llvm/ADT/Twine.h"
 #include "mlir/IR/Builders.h"  // from @llvm-project
+#include "mlir/IR/Diagnostics.h"  // from @llvm-project
+#include "mlir/IR/Location.h"  // from @llvm-project
 #include "mlir/IR/MLIRContext.h"  // from @llvm-project
-#include "tensorflow/compiler/xla/test.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/status_test_util.h"
+#include "xla/hlo/testlib/test.h"
+#include "xla/tsl/lib/core/status_test_util.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
 
 namespace mlir {
 namespace {
 
-using testing::HasSubstr;
+using ::testing::HasSubstr;
 
-TEST(ErrorUtilTest, StatusScopedDiagnosticHandler) {
-  MLIRContext context;
-  auto id = StringAttr::get(&context, "//tensorflow/python/test.py");
-  auto loc = FileLineColLoc::get(&context, id, 0, 0);
+class ErrorUtilTest : public ::testing::Test {
+ protected:
+  ErrorUtilTest()
+      : id_(StringAttr::get(&context_, "//tensorflow/python/test.py")),
+        loc_(FileLineColLoc::get(&context_, id_, 0, 0)) {}
 
-  // Test OK without diagnostic gets passed through.
-  {
-    TF_ASSERT_OK(StatusScopedDiagnosticHandler(&context).Combine(Status::OK()));
-  }
+  MLIRContext context_;
+  StringAttr id_;
+  FileLineColLoc loc_;
+};
 
-  // Verify diagnostics are captured as Unknown status.
-  {
-    StatusScopedDiagnosticHandler handler(&context);
-    emitError(loc) << "Diagnostic message";
-    ASSERT_TRUE(tensorflow::errors::IsUnknown(handler.ConsumeStatus()));
-  }
+using StatusScopedDiagnosticHandlerTest = ErrorUtilTest;
 
-  // Verify passed in errors are propagated.
-  {
-    Status err = tensorflow::errors::Internal("Passed in error");
-    ASSERT_TRUE(tensorflow::errors::IsInternal(
-        StatusScopedDiagnosticHandler(&context).Combine(err)));
-  }
-
-  // Verify diagnostic reported are append to passed in error.
-  {
-    auto function = [&]() {
-      emitError(loc) << "Diagnostic message reported";
-      emitError(loc) << "Second diagnostic message reported";
-      return tensorflow::errors::Internal("Passed in error");
-    };
-    StatusScopedDiagnosticHandler ssdh(&context);
-    Status s = ssdh.Combine(function());
-    ASSERT_TRUE(tensorflow::errors::IsInternal(s));
-    EXPECT_THAT(s.error_message(), HasSubstr("Passed in error"));
-    EXPECT_THAT(s.error_message(), HasSubstr("Diagnostic message reported"));
-    EXPECT_THAT(s.error_message(),
-                HasSubstr("Second diagnostic message reported"));
-  }
+TEST_F(StatusScopedDiagnosticHandlerTest,
+       OkWithoutDiagnosticGetsPassedThrough) {
+  TF_ASSERT_OK(
+      StatusScopedDiagnosticHandler(&context_).Combine(absl::OkStatus()));
 }
+
+TEST_F(StatusScopedDiagnosticHandlerTest,
+       VerifyDiagnosticsAreCapturedAsUnknownStatus) {
+  StatusScopedDiagnosticHandler handler(&context_);
+  emitError(loc_) << "Diagnostic message";
+  ASSERT_TRUE(absl::IsUnknown(handler.ConsumeStatus()));
+}
+
+TEST_F(StatusScopedDiagnosticHandlerTest, VerifyPassedInErrorsArePropagated) {
+  const Status err = absl::InternalError("Passed in error");
+  ASSERT_TRUE(
+      absl::IsInternal(StatusScopedDiagnosticHandler(&context_).Combine(err)));
+}
+
+TEST_F(StatusScopedDiagnosticHandlerTest,
+       VerifyThatReportedDiagnosticsAreAppendedToPassedInError) {
+  StatusScopedDiagnosticHandler ssdh(&context_);
+  emitError(loc_) << "Diagnostic message reported";
+  emitError(loc_) << "Second diagnostic message reported";
+  const Status s = ssdh.Combine(absl::InternalError("Passed in error"));
+  ASSERT_TRUE(absl::IsInternal(s));
+  EXPECT_THAT(s.message(), HasSubstr("Passed in error"));
+  EXPECT_THAT(s.message(), HasSubstr("Diagnostic message reported"));
+  EXPECT_THAT(s.message(), HasSubstr("Second diagnostic message reported"));
+}
+
 
 TEST(ErrorUtilTest, StatusScopedDiagnosticHandlerWithFilter) {
   // Filtering logic is based on tensorflow::IsInternalFrameForFilename()
@@ -110,11 +116,11 @@ TEST(ErrorUtilTest, StatusScopedDiagnosticHandlerWithFilter) {
   emitError(callsite_loc3) << "Error 3";
   Status s_filtered = ssdh_filter.ConsumeStatus();
   // Check for the files that should not be filtered.
-  EXPECT_THAT(s_filtered.error_message(), HasSubstr("keras"));
-  EXPECT_THAT(s_filtered.error_message(), HasSubstr("test.py"));
-  EXPECT_THAT(s_filtered.error_message(), HasSubstr("show_file"));
+  EXPECT_THAT(s_filtered.message(), HasSubstr("keras"));
+  EXPECT_THAT(s_filtered.message(), HasSubstr("test.py"));
+  EXPECT_THAT(s_filtered.message(), HasSubstr("show_file"));
   // Verify the filtered files are not present.
-  EXPECT_THAT(s_filtered.error_message(), Not(HasSubstr("filtered_file")));
+  EXPECT_THAT(s_filtered.message(), Not(HasSubstr("filtered_file")));
 }
 
 TEST(ErrorUtilTest, StatusScopedDiagnosticHandlerWithoutFilter) {
@@ -150,10 +156,10 @@ TEST(ErrorUtilTest, StatusScopedDiagnosticHandlerWithoutFilter) {
   emitError(callsite_loc2) << "Error 2";
   Status s_no_filter = ssdh_no_filter.ConsumeStatus();
   // All files should be present, especially the 'filtered' ones.
-  EXPECT_THAT(s_no_filter.error_message(), HasSubstr("keras"));
-  EXPECT_THAT(s_no_filter.error_message(), HasSubstr("my_op"));
-  EXPECT_THAT(s_no_filter.error_message(), HasSubstr("filtered_file_A"));
-  EXPECT_THAT(s_no_filter.error_message(), HasSubstr("filtered_file_B"));
+  EXPECT_THAT(s_no_filter.message(), HasSubstr("keras"));
+  EXPECT_THAT(s_no_filter.message(), HasSubstr("my_op"));
+  EXPECT_THAT(s_no_filter.message(), HasSubstr("filtered_file_A"));
+  EXPECT_THAT(s_no_filter.message(), HasSubstr("filtered_file_B"));
 }
 
 }  // namespace

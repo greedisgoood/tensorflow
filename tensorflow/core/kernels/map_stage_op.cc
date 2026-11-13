@@ -14,10 +14,12 @@ limitations under the License.
 ==============================================================================*/
 
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <map>
 #include <mutex>
 #include <numeric>
+#include <optional>
 #include <unordered_map>
 #include <vector>
 
@@ -25,7 +27,6 @@ limitations under the License.
 #include "tensorflow/core/framework/resource_mgr.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
-#include "tensorflow/core/lib/gtl/optional.h"
 #include "tensorflow/core/lib/strings/strcat.h"
 #include "tensorflow/core/platform/env.h"
 #include "tensorflow/core/platform/mutex.h"
@@ -84,7 +85,7 @@ class StagingMap : public ResourceBase {
  public:
   // Public typedefs
   using Tuple = std::vector<Tensor>;
-  using OptionalTensor = gtl::optional<Tensor>;
+  using OptionalTensor = std::optional<Tensor>;
   using OptionalTuple = std::vector<OptionalTensor>;
 
   using MapType = typename MapTraits<Ordered, OptionalTuple>::MapType;
@@ -163,20 +164,20 @@ class StagingMap : public ResourceBase {
   }
 
   // Check that the index is within bounds
-  Status check_index(const Tensor& key, std::size_t index)
+  absl::Status check_index(const Tensor& key, std::size_t index)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     if (index >= dtypes_.size()) {
-      return Status(errors::InvalidArgument(
-          "Index '", index, "' for key '", key.scalar<int64_t>()(),
-          "' was out of bounds '", dtypes_.size(), "'."));
+      return absl::Status(absl::InvalidArgumentError(
+          absl::StrCat("Index '", index, "' for key '", key.scalar<int64_t>()(),
+                       "' was out of bounds '", dtypes_.size(), "'.")));
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status copy_or_move_tensors(OptionalTuple* map_tuple, const Tensor& key,
-                              const Tensor& indices, Tuple* output,
-                              bool copy = false)
+  absl::Status copy_or_move_tensors(OptionalTuple* map_tuple, const Tensor& key,
+                                    const Tensor& indices, Tuple* output,
+                                    bool copy = false)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     auto findices = indices.flat<int>();
 
@@ -188,9 +189,9 @@ class StagingMap : public ResourceBase {
 
       // Insist on a value present at the specified index
       if (!(*map_tuple)[index].has_value()) {
-        return Status(errors::InvalidArgument(
+        return absl::Status(absl::InvalidArgumentError(absl::StrCat(
             "Tensor at index '", index, "' for key '", key.scalar<int64_t>()(),
-            "' has already been removed."));
+            "' has already been removed.")));
       }
 
       // Copy the contained tensor and
@@ -203,28 +204,28 @@ class StagingMap : public ResourceBase {
       }
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Check that the optional value at the specified index
   // is uninitialized
-  Status check_index_uninitialized(const Tensor& key, std::size_t index,
-                                   const OptionalTuple& tuple)
+  absl::Status check_index_uninitialized(const Tensor& key, std::size_t index,
+                                         const OptionalTuple& tuple)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     if (tuple[index].has_value()) {
-      return errors::InvalidArgument("The tensor for index '", index,
-                                     "' for key '", key.scalar<int64_t>()(),
-                                     "' was already initialized '",
-                                     dtypes_.size(), "'.");
+      return absl::InvalidArgumentError(
+          absl::StrCat("The tensor for index '", index, "' for key '",
+                       key.scalar<int64_t>()(), "' was already initialized '",
+                       dtypes_.size(), "'."));
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Check that the indices are strictly ordered
-  Status check_index_ordering(const Tensor& indices) {
+  absl::Status check_index_ordering(const Tensor& indices) {
     if (indices.NumElements() == 0) {
-      return errors::InvalidArgument("Indices are empty");
+      return absl::InvalidArgumentError("Indices are empty");
     }
 
     auto findices = indices.flat<int>();
@@ -234,28 +235,29 @@ class StagingMap : public ResourceBase {
         continue;
       }
 
-      return errors::InvalidArgument("Indices are not strictly ordered");
+      return absl::InvalidArgumentError("Indices are not strictly ordered");
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Check bytes are within memory limits memory limits
-  Status check_memory_limit(std::size_t bytes)
+  absl::Status check_memory_limit(std::size_t bytes)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     if (has_memory_limit() && bytes > memory_limit_) {
-      return errors::ResourceExhausted(
+      return absl::ResourceExhaustedError(absl::StrCat(
           "Attempted to insert tensors with combined size of '", bytes,
           "' bytes into Staging Area with a memory limit of '", memory_limit_,
-          "'.");
+          "'."));
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Insert incomplete data into the Barrier
-  Status put_incomplete(const KeyType& key, const Tensor& indices,
-                        OptionalTuple* tuple, tensorflow::mutex_lock* lock)
+  absl::Status put_incomplete(const KeyType& key, const Tensor& indices,
+                              OptionalTuple* tuple,
+                              tensorflow::mutex_lock* lock)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     auto findices = indices.flat<int>();
 
@@ -327,18 +329,18 @@ class StagingMap : public ResourceBase {
       }
     }
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   // Does the insertion into the actual staging area
-  Status put_complete(const KeyType& key, OptionalTuple* tuple)
+  absl::Status put_complete(const KeyType& key, OptionalTuple* tuple)
       TF_EXCLUSIVE_LOCKS_REQUIRED(mu_) {
     // Insert key and tuples into the map
     map_.insert({key, std::move(*tuple)});
 
     notify_removers();
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
  public:
@@ -350,11 +352,22 @@ class StagingMap : public ResourceBase {
         memory_limit_(memory_limit),
         current_bytes_(0) {}
 
-  Status put(KeyType* key, const Tensor* indices, OptionalTuple* tuple) {
-    tensorflow::mutex_lock lock(mu_);
+  absl::Status put(KeyType* key, const Tensor* indices, OptionalTuple* tuple) {
+    // Every index must have a corresponding value. Otherwise the loops in
+    // put_incomplete() read (*tuple)[i] past the end of the tuple, and the
+    // complete path stores a tuple shorter than dtypes_ that later gets()
+    // and pops() then index out of bounds.
+    if (indices->NumElements() != 0 &&
+        indices->NumElements() != static_cast<int64_t>(tuple->size())) {
+      return absl::InvalidArgumentError(absl::StrCat(
+          "Number of indices '", indices->NumElements(),
+          "' does not match number of values '", tuple->size(), "'."));
+    }
 
     // Sanity check the indices
     TF_RETURN_IF_ERROR(check_index_ordering(*indices));
+
+    tensorflow::mutex_lock lock(mu_);
 
     // Handle incomplete inserts
     if (indices->NumElements() != dtypes_.size()) {
@@ -376,10 +389,10 @@ class StagingMap : public ResourceBase {
     // Update the current size
     current_bytes_ += tuple_bytes;
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status get(const KeyType* key, const Tensor* indices, Tuple* tuple) {
+  absl::Status get(const KeyType* key, const Tensor* indices, Tuple* tuple) {
     tensorflow::mutex_lock lock(mu_);
 
     // Sanity check the indices
@@ -398,10 +411,10 @@ class StagingMap : public ResourceBase {
     // Update bytes in the Staging Area
     current_bytes_ -= get_tuple_bytes(*tuple);
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status pop(const KeyType* key, const Tensor* indices, Tuple* tuple) {
+  absl::Status pop(const KeyType* key, const Tensor* indices, Tuple* tuple) {
     tensorflow::mutex_lock lock(mu_);
 
     // Sanity check the indices
@@ -429,10 +442,10 @@ class StagingMap : public ResourceBase {
 
     notify_inserters_if_bounded();
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status popitem(KeyType* key, const Tensor* indices, Tuple* tuple) {
+  absl::Status popitem(KeyType* key, const Tensor* indices, Tuple* tuple) {
     tensorflow::mutex_lock lock(mu_);
 
     // Sanity check the indices
@@ -447,10 +460,10 @@ class StagingMap : public ResourceBase {
 
     auto it = map_.begin();
 
+    *key = it->first;
+
     TF_RETURN_IF_ERROR(
         copy_or_move_tensors(&it->second, *key, *indices, tuple));
-
-    *key = it->first;
 
     // Remove entry if all the values have been consumed
     if (!std::any_of(
@@ -464,10 +477,10 @@ class StagingMap : public ResourceBase {
 
     notify_inserters_if_bounded();
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
-  Status clear() {
+  absl::Status clear() {
     tensorflow::mutex_lock lock(mu_);
     map_.clear();
     incomplete_.clear();
@@ -475,7 +488,7 @@ class StagingMap : public ResourceBase {
 
     notify_inserters_if_bounded();
 
-    return Status::OK();
+    return absl::OkStatus();
   }
 
   std::size_t incomplete_size() {
@@ -488,17 +501,17 @@ class StagingMap : public ResourceBase {
     return map_.size();
   }
 
-  string DebugString() const override { return "StagingMap"; }
+  std::string DebugString() const override { return "StagingMap"; }
 };
 
 template <bool Ordered>
-Status GetStagingMap(OpKernelContext* ctx, const NodeDef& ndef,
-                     StagingMap<Ordered>** map) {
+absl::Status GetStagingMap(OpKernelContext* ctx, const NodeDef& ndef,
+                           StagingMap<Ordered>** map) {
   auto rm = ctx->resource_manager();
   ContainerInfo cinfo;
 
   // Lambda for creating the Staging Area
-  auto create_fn = [&ndef](StagingMap<Ordered>** ret) -> Status {
+  auto create_fn = [&ndef](StagingMap<Ordered>** ret) -> absl::Status {
     DataTypeVector dtypes;
     int64_t capacity;
     int64_t memory_limit;
@@ -506,13 +519,13 @@ Status GetStagingMap(OpKernelContext* ctx, const NodeDef& ndef,
     TF_RETURN_IF_ERROR(GetNodeAttr(ndef, "capacity", &capacity));
     TF_RETURN_IF_ERROR(GetNodeAttr(ndef, "memory_limit", &memory_limit));
     *ret = new StagingMap<Ordered>(dtypes, capacity, memory_limit);
-    return Status::OK();
+    return absl::OkStatus();
   };
 
   TF_RETURN_IF_ERROR(cinfo.Init(rm, ndef, true /* use name() */));
   TF_RETURN_IF_ERROR(rm->LookupOrCreate<StagingMap<Ordered>>(
       cinfo.container(), cinfo.name(), map, create_fn));
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 template <bool Ordered>
@@ -534,7 +547,7 @@ class MapStageOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->input("indices", &indices_tensor));
     OP_REQUIRES_OK(ctx, ctx->input_list("values", &values_tensor));
     OP_REQUIRES(ctx, key_tensor->NumElements() > 0,
-                errors::InvalidArgument("key must not be empty"));
+                absl::InvalidArgumentError("key must not be empty"));
 
     OP_REQUIRES(ctx, key_tensor->NumElements() == 1,
                 errors::InvalidArgument(
@@ -587,6 +600,11 @@ class MapUnstageOp : public OpKernel {
 
     OP_REQUIRES_OK(ctx, ctx->input("key", &key_tensor));
     OP_REQUIRES_OK(ctx, ctx->input("indices", &indices_tensor));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(key_tensor->shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("key must be an int64 scalar: ",
+                                 key_tensor->shape().DebugString())));
+
     OP_REQUIRES_OK(ctx, map->pop(key_tensor, indices_tensor, &tuple));
 
     OP_REQUIRES(
@@ -633,6 +651,10 @@ class MapPeekOp : public OpKernel {
     const Tensor* indices_tensor;
 
     OP_REQUIRES_OK(ctx, ctx->input("key", &key_tensor));
+    OP_REQUIRES(ctx, TensorShapeUtils::IsScalar(key_tensor->shape()),
+                absl::InvalidArgumentError(
+                    absl::StrCat("key must be an int64 scalar: ",
+                                 key_tensor->shape().DebugString())));
     OP_REQUIRES_OK(ctx, ctx->input("indices", &indices_tensor));
     OP_REQUIRES_OK(ctx, map->get(key_tensor, indices_tensor, &tuple));
 
@@ -728,7 +750,7 @@ class MapSizeOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &size));
 
     // Set it to the actual size
-    size->scalar<int32>().setConstant(map->size());
+    size->scalar<int32_t>().setConstant(map->size());
   }
 };
 
@@ -758,7 +780,7 @@ class MapIncompleteSizeOp : public OpKernel {
     OP_REQUIRES_OK(ctx, ctx->allocate_output(0, TensorShape({}), &size));
 
     // Set it to the actual size
-    size->scalar<int32>().setConstant(map->incomplete_size());
+    size->scalar<int32_t>().setConstant(map->incomplete_size());
   }
 };
 

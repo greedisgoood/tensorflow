@@ -32,8 +32,7 @@ def ragged_unary_elementwise_op(op, x):
   return x.with_values(op(x.values))
 
 
-@dispatch.dispatch_for_binary_elementwise_apis(ragged_tensor.RaggedOrDense,
-                                               ragged_tensor.RaggedOrDense)
+# TODO(martinz): This is deprecated. Delete.
 def ragged_binary_elementwise_op(op, x, y):
   """Binary elementwise api handler for RaggedTensors."""
   x_is_ragged = ragged_tensor.is_ragged(x)
@@ -48,7 +47,7 @@ def ragged_binary_elementwise_op(op, x, y):
   if x_is_ragged and y_is_ragged:
     x, y = ragged_tensor.match_row_splits_dtypes(x, y)
 
-  # Perform broadcasting, when appropraite
+  # Perform broadcasting, when appropriate
   if ((x_is_ragged and y_is_ragged) or
       (x_is_ragged and x.flat_values.shape.ndims <= y.shape.ndims) or
       (y_is_ragged and y.flat_values.shape.ndims <= x.shape.ndims)):

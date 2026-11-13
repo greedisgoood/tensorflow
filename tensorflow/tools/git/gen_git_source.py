@@ -1,4 +1,3 @@
-# Lint as: python2, python3
 # Copyright 2016 The TensorFlow Authors. All Rights Reserved.
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
@@ -170,9 +169,14 @@ def get_git_version(git_base_path, git_tag_override):
     if git_tag_override and val:
       split_val = val.split(version_separator)
       if len(split_val) < 3:
-        raise Exception(
-            ("Expected git version in format 'TAG-COMMITS AFTER TAG-HASH' "
-             "but got '%s'") % val)
+        raise ValueError(
+            (
+                "Expected git version in format "
+                "'TAG-COMMITS AFTER TAG-HASH' "
+                "but got '%s'"
+            )
+            % val
+        )
       # There might be "-" in the tag name. But we can be sure that the final
       # two "-" are those inserted by the git describe command.
       abbrev_commit = split_val[-1]
@@ -212,6 +216,7 @@ def write_version_info(filename, git_version):
 #else
 #define TF_CXX11_ABI_FLAG 0
 #endif
+#define TF_CXX_VERSION __cplusplus
 #ifdef TENSORFLOW_MONOLITHIC_BUILD
 #define TF_MONOLITHIC_BUILD 1
 #else

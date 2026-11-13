@@ -15,6 +15,7 @@ limitations under the License.
 
 package org.tensorflow.lite;
 
+import java.lang.reflect.InvocationTargetException;
 import java.nio.ByteBuffer;
 import java.nio.ByteOrder;
 import java.nio.MappedByteBuffer;
@@ -22,10 +23,10 @@ import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Objects;
 import java.util.TreeMap;
-import org.checkerframework.checker.initialization.qual.UnknownInitialization;
-import org.checkerframework.checker.nullness.qual.Nullable;
+import org.tensorflow.lite.InterpreterApi.Options.TfLiteRuntime;
+import org.tensorflow.lite.InterpreterImpl.Options;
+import org.tensorflow.lite.annotations.UsedByReflection;
 import org.tensorflow.lite.nnapi.NnApiDelegate;
 
 /**
@@ -39,6 +40,9 @@ import org.tensorflow.lite.nnapi.NnApiDelegate;
  */
 class NativeInterpreterWrapper implements AutoCloseable {
 
+  // This is changed to RuntimeFlavor.SYSTEM for TF Lite in Google Play Services.
+  private static final RuntimeFlavor RUNTIME_FLAVOR = RuntimeFlavor.APPLICATION;
+
   NativeInterpreterWrapper(String modelPath) {
     this(modelPath, /* options= */ null);
   }
@@ -47,14 +51,14 @@ class NativeInterpreterWrapper implements AutoCloseable {
     this(byteBuffer, /* options= */ null);
   }
 
-  NativeInterpreterWrapper(String modelPath, InterpreterImpl.@Nullable Options options) {
+  NativeInterpreterWrapper(String modelPath, InterpreterImpl.Options options) {
     TensorFlowLite.init();
     long errorHandle = createErrorReporter(ERROR_BUFFER_SIZE);
     long modelHandle = createModel(modelPath, errorHandle);
     init(errorHandle, modelHandle, options);
   }
 
-  NativeInterpreterWrapper(ByteBuffer buffer, InterpreterImpl.@Nullable Options options) {
+  NativeInterpreterWrapper(ByteBuffer buffer, InterpreterImpl.Options options) {
     TensorFlowLite.init();
     if (buffer == null
         || (!(buffer instanceof MappedByteBuffer)
@@ -65,17 +69,17 @@ class NativeInterpreterWrapper implements AutoCloseable {
     }
     this.modelByteBuffer = buffer;
     long errorHandle = createErrorReporter(ERROR_BUFFER_SIZE);
-    long modelHandle = createModelWithBuffer(buffer, errorHandle);
+    long modelHandle = createModelWithBuffer(modelByteBuffer, errorHandle);
     init(errorHandle, modelHandle, options);
   }
 
-  private void init(
-      @UnknownInitialization NativeInterpreterWrapper this,
-      long errorHandle,
-      long modelHandle,
-      InterpreterImpl.@Nullable Options options) {
+  private void init(long errorHandle, long modelHandle, InterpreterImpl.Options options) {
     if (options == null) {
       options = new InterpreterImpl.Options();
+    }
+    if (options.getAccelerationConfig() != null) {
+      // Apply the validated acceleration config
+      options.getAccelerationConfig().apply(options);
     }
     this.errorHandle = errorHandle;
     this.modelHandle = modelHandle;
@@ -84,28 +88,39 @@ class NativeInterpreterWrapper implements AutoCloseable {
     // delegates might fail if there are any unresolved flex ops.
     // (Alternatively, we could determine this without needing to recreate the interpreter
     // by passing the tflite::Model in to here, and then traversing that?)
-    ArrayList<Long> delegateHandles = new ArrayList<Long>();
+    ArrayList<Long> delegateHandles = new ArrayList<>();
     this.interpreterHandle =
-        createInterpreter(modelHandle, errorHandle, options.getNumThreads(), delegateHandles);
+        createInterpreter(
+            modelHandle,
+            errorHandle,
+            options.getNumThreads(),
+            options.getUseXNNPACK(),
+            options.getCompressQuantizationZeroPoints(),
+            delegateHandles);
     this.originalGraphHasUnresolvedFlexOp = hasUnresolvedFlexOp(interpreterHandle);
     addDelegates(options);
-    Objects.requireNonNull(delegates);
+    initDelegatesWithInterpreterFactory();
     delegateHandles.ensureCapacity(delegates.size());
     for (Delegate delegate : delegates) {
-      delegateHandles.add(Long.valueOf(delegate.getNativeHandle()));
+      delegateHandles.add(delegate.getNativeHandle());
     }
     if (!delegateHandles.isEmpty()) {
       // If there are any delegates enabled, recreate the interpreter with those delegates.
       delete(/* errorHandle= */ 0, /* modelHandle= */ 0, this.interpreterHandle);
       this.interpreterHandle =
-          createInterpreter(modelHandle, errorHandle, options.getNumThreads(), delegateHandles);
+          createInterpreter(
+              modelHandle,
+              errorHandle,
+              options.getNumThreads(),
+              options.getUseXNNPACK(),
+              options.getCompressQuantizationZeroPoints(),
+              delegateHandles);
     }
     if (options.allowFp16PrecisionForFp32 != null) {
-      allowFp16PrecisionForFp32(
-          interpreterHandle, options.allowFp16PrecisionForFp32.booleanValue());
+      allowFp16PrecisionForFp32(interpreterHandle, options.allowFp16PrecisionForFp32);
     }
     if (options.allowBufferHandleOutput != null) {
-      allowBufferHandleOutput(interpreterHandle, options.allowBufferHandleOutput.booleanValue());
+      allowBufferHandleOutput(interpreterHandle, options.allowBufferHandleOutput);
     }
     if (options.isCancellable()) {
       this.cancellationFlagHandle = createCancellationFlag(interpreterHandle);
@@ -113,11 +128,10 @@ class NativeInterpreterWrapper implements AutoCloseable {
     this.inputTensors = new TensorImpl[getInputCount(interpreterHandle)];
     this.outputTensors = new TensorImpl[getOutputCount(interpreterHandle)];
     if (options.allowFp16PrecisionForFp32 != null) {
-      allowFp16PrecisionForFp32(
-          interpreterHandle, options.allowFp16PrecisionForFp32.booleanValue());
+      allowFp16PrecisionForFp32(interpreterHandle, options.allowFp16PrecisionForFp32);
     }
     if (options.allowBufferHandleOutput != null) {
-      allowBufferHandleOutput(interpreterHandle, options.allowBufferHandleOutput.booleanValue());
+      allowBufferHandleOutput(interpreterHandle, options.allowBufferHandleOutput);
     }
     allocateTensors(interpreterHandle, errorHandle);
     this.isMemoryAllocated = true;
@@ -139,6 +153,12 @@ class NativeInterpreterWrapper implements AutoCloseable {
         outputTensors[i] = null;
       }
     }
+    // Close the delegates first as they may reference the model.
+    delegates.clear();
+    for (Delegate ownedDelegate : ownedDelegates) {
+      ownedDelegate.close();
+    }
+    ownedDelegates.clear();
     delete(errorHandle, modelHandle, interpreterHandle);
     deleteCancellationFlag(cancellationFlagHandle);
     errorHandle = 0;
@@ -149,15 +169,6 @@ class NativeInterpreterWrapper implements AutoCloseable {
     inputsIndexes = null;
     outputsIndexes = null;
     isMemoryAllocated = false;
-    delegates.clear();
-    for (AutoCloseable ownedDelegate : ownedDelegates) {
-      try {
-        ownedDelegate.close();
-      } catch (Exception e) {
-        System.err.println("Failed to close flex delegate: " + e);
-      }
-    }
-    ownedDelegates.clear();
   }
 
   /** Runs model inference based on SignatureDef provided through {@code signatureKey}. */
@@ -173,8 +184,6 @@ class NativeInterpreterWrapper implements AutoCloseable {
     NativeSignatureRunnerWrapper signatureRunnerWrapper = getSignatureRunnerWrapper(signatureKey);
     int subgraphIndex = signatureRunnerWrapper.getSubgraphIndex();
     if (subgraphIndex == 0) {
-      // Run the primary subgraph and update the cached tensor objects.
-      initTensorIndexesMaps();
       // Map inputs/output to input indexes.
       Object[] inputsList = new Object[inputs.size()];
       for (Map.Entry<String, Object> input : inputs.entrySet()) {
@@ -188,12 +197,21 @@ class NativeInterpreterWrapper implements AutoCloseable {
       run(inputsList, outputsWithOutputIndex);
       return;
     }
-
     for (Map.Entry<String, Object> input : inputs.entrySet()) {
       TensorImpl tensor = getInputTensor(input.getKey(), signatureKey);
       int[] newShape = tensor.getInputShapeIfDifferent(input.getValue());
       if (newShape != null) {
-        signatureRunnerWrapper.resizeInput(input.getKey(), newShape);
+        try {
+          signatureRunnerWrapper.resizeInput(input.getKey(), newShape);
+        } catch (IllegalArgumentException e) {
+          throw (IllegalArgumentException)
+              new IllegalArgumentException(
+                      String.format(
+                          "Tensor passed for input '%s' of signature '%s' has different "
+                              + "shape than expected",
+                          input.getKey(), signatureKey))
+                  .initCause(e);
+        }
       }
     }
 
@@ -251,9 +269,9 @@ class NativeInterpreterWrapper implements AutoCloseable {
 
     // Allocation can trigger dynamic resizing of output tensors, so refresh all output shapes.
     if (allocatedTensors) {
-      for (int i = 0; i < outputTensors.length; ++i) {
-        if (outputTensors[i] != null) {
-          outputTensors[i].refreshShape();
+      for (TensorImpl outputTensor : outputTensors) {
+        if (outputTensor != null) {
+          outputTensor.refreshShape();
         }
       }
     }
@@ -300,9 +318,9 @@ class NativeInterpreterWrapper implements AutoCloseable {
 
     isMemoryAllocated = true;
     allocateTensors(interpreterHandle, errorHandle);
-    for (int i = 0; i < outputTensors.length; ++i) {
-      if (outputTensors[i] != null) {
-        outputTensors[i].refreshShape();
+    for (TensorImpl outputTensor : outputTensors) {
+      if (outputTensor != null) {
+        outputTensor.refreshShape();
       }
     }
     return true;
@@ -327,25 +345,6 @@ class NativeInterpreterWrapper implements AutoCloseable {
               "Input error: '%s' is not a valid name for any input. Names of inputs and their "
                   + "indexes are %s",
               name, inputsIndexes));
-    }
-  }
-
-  /** Initializes mapping from tensor index to input/output index. * */
-  private void initTensorIndexesMaps() {
-    if (tensorToInputsIndexes != null) {
-      return;
-    }
-    tensorToInputsIndexes = new HashMap<>();
-    tensorToOutputsIndexes = new HashMap<>();
-    int inputCount = getInputTensorCount();
-    for (int i = 0; i < inputCount; ++i) {
-      int tensorIndex = getInputTensorIndex(interpreterHandle, i);
-      tensorToInputsIndexes.put(tensorIndex, i);
-    }
-    int outputCount = getOutputTensorCount();
-    for (int i = 0; i < outputCount; ++i) {
-      int tensorIndex = getOutputTensorIndex(interpreterHandle, i);
-      tensorToOutputsIndexes.put(tensorIndex, i);
     }
   }
 
@@ -375,7 +374,7 @@ class NativeInterpreterWrapper implements AutoCloseable {
    * Gets the last inference duration in nanoseconds. It returns null if there is no previous
    * inference run or the last inference run failed.
    */
-  @Nullable Long getLastNativeInferenceDurationNanoseconds() {
+  Long getLastNativeInferenceDurationNanoseconds() {
     return (inferenceDurationNanoseconds < 0) ? null : inferenceDurationNanoseconds;
   }
 
@@ -414,12 +413,11 @@ class NativeInterpreterWrapper implements AutoCloseable {
     }
     NativeSignatureRunnerWrapper signatureRunnerWrapper = getSignatureRunnerWrapper(signatureKey);
     int subgraphIndex = signatureRunnerWrapper.getSubgraphIndex();
-    if (subgraphIndex > 0) {
-      return signatureRunnerWrapper.getInputTensor(inputName);
+    if (subgraphIndex == 0) {
+      int inputIndex = signatureRunnerWrapper.getInputIndex(inputName);
+      return getInputTensor(inputIndex);
     }
-
-    int inputIndex = signatureRunnerWrapper.getInputIndex(inputName);
-    return getInputTensor(inputIndex);
+    return signatureRunnerWrapper.getInputTensor(inputName);
   }
 
   /** Gets the keys of SignatureDefs available in the model, if any. */
@@ -472,12 +470,11 @@ class NativeInterpreterWrapper implements AutoCloseable {
     }
     NativeSignatureRunnerWrapper signatureRunnerWrapper = getSignatureRunnerWrapper(signatureKey);
     int subgraphIndex = signatureRunnerWrapper.getSubgraphIndex();
-    if (subgraphIndex > 0) {
-      return signatureRunnerWrapper.getOutputTensor(outputName);
+    if (subgraphIndex == 0) {
+      int outputIndex = signatureRunnerWrapper.getOutputIndex(outputName);
+      return getOutputTensor(outputIndex);
     }
-
-    int outputIndex = signatureRunnerWrapper.getOutputIndex(outputName);
-    return getOutputTensor(outputIndex);
+    return signatureRunnerWrapper.getOutputTensor(outputName);
   }
 
   /** Gets the number of ops in the execution plan. */
@@ -498,48 +495,53 @@ class NativeInterpreterWrapper implements AutoCloseable {
   }
 
   // Add all the delegates specified in the options (other than XNNPACK) to this.delegates.
-  private void addDelegates(
-      @UnknownInitialization NativeInterpreterWrapper this, InterpreterApi.Options options) {
-    Objects.requireNonNull(delegates);
-    Objects.requireNonNull(ownedDelegates);
+  private void addDelegates(InterpreterImpl.Options options) {
     // First add the flex delegate if necessary. This ensures the graph is fully resolved before
     // applying other delegates.
     if (originalGraphHasUnresolvedFlexOp) {
       Delegate optionalFlexDelegate = maybeCreateFlexDelegate(options.getDelegates());
       if (optionalFlexDelegate != null) {
-        ownedDelegates.add((AutoCloseable) optionalFlexDelegate);
+        ownedDelegates.add(optionalFlexDelegate);
         delegates.add(optionalFlexDelegate);
       }
     }
     // Now add the user-supplied delegates.
-    delegates.addAll(options.getDelegates());
+    addUserProvidedDelegates(options);
+    for (DelegateFactory delegateFactory : options.getDelegateFactories()) {
+      Delegate delegate = delegateFactory.create(RUNTIME_FLAVOR);
+      ownedDelegates.add(delegate);
+      delegates.add(delegate);
+    }
     if (options.getUseNNAPI()) {
       NnApiDelegate optionalNnApiDelegate = new NnApiDelegate();
       ownedDelegates.add(optionalNnApiDelegate);
       delegates.add(optionalNnApiDelegate);
     }
-    // Finally add the XNNPACK delegate if enabled.
-    if (options instanceof InterpreterImpl.Options) {
-      maybeAddXnnpackDelegate((InterpreterImpl.Options) options);
+  }
+
+  private void addUserProvidedDelegates(Options options) {
+    for (Delegate delegate : options.getDelegates()) {
+      // NnApiDelegate is compatible with both the system and built-in runtimes and therefore can be
+      // added directly even when using TF Lite from the system.
+      if (options.getRuntime() != TfLiteRuntime.FROM_APPLICATION_ONLY
+          && !(delegate instanceof NnApiDelegate)) {
+        throw new IllegalArgumentException(
+            "Instantiated delegates (other than NnApiDelegate) are not allowed when using TF Lite"
+                + " from Google Play Services. Please use"
+                + " InterpreterApi.Options.addDelegateFactory() with an appropriate DelegateFactory"
+                + " instead.");
+      }
+      delegates.add(delegate);
     }
   }
 
-  // Optionally add the XNNPACK delegate.
-  private void maybeAddXnnpackDelegate(
-      @UnknownInitialization NativeInterpreterWrapper this, InterpreterImpl.Options options) {
-    // Simply use "-1" to represent the default mode.
-    int applyXNNPACKMode = -1;
-    if (options.useXNNPACK != null) {
-      applyXNNPACKMode = options.useXNNPACK.booleanValue() ? 1 : 0;
-    }
-
-    // TODO(b/171856982): uncomment the following when applying XNNPACK delegate by default is
-    // enabled for C++ TfLite library on Android platform.
-    if (applyXNNPACKMode == 1 /*|| applyXNNPACKMode == -1*/) {
-      XnnpackDelegate xnnpackDelegate =
-          createXNNPACKDelegate(
-              interpreterHandle, errorHandle, applyXNNPACKMode, options.getNumThreads());
-      Objects.requireNonNull(delegates).add(xnnpackDelegate);
+  // Complete the initialization of any delegates that require an InterpreterFactoryApi instance.
+  private void initDelegatesWithInterpreterFactory() {
+    InterpreterFactoryApi interpreterFactoryApi = new InterpreterFactoryImpl();
+    for (Delegate delegate : delegates) {
+      if (delegate instanceof NnApiDelegate) {
+        ((NnApiDelegate) delegate).initWithInterpreterFactoryApi(interpreterFactoryApi);
+      }
     }
   }
 
@@ -555,7 +557,6 @@ class NativeInterpreterWrapper implements AutoCloseable {
     return signatureRunnerMap.get(signatureKey);
   }
 
-  @Nullable
   private static Delegate maybeCreateFlexDelegate(List<Delegate> delegates) {
     try {
       Class<?> clazz = Class.forName("org.tensorflow.lite.flex.FlexDelegate");
@@ -566,7 +567,13 @@ class NativeInterpreterWrapper implements AutoCloseable {
         }
       }
       return (Delegate) clazz.getConstructor().newInstance();
-    } catch (Exception e) {
+    } catch (ClassNotFoundException
+        | IllegalAccessException
+        | IllegalArgumentException
+        | InstantiationException
+        | InvocationTargetException
+        | NoSuchMethodException
+        | SecurityException e) {
       // The error will propagate when tensors are allocated.
       return null;
     }
@@ -582,23 +589,21 @@ class NativeInterpreterWrapper implements AutoCloseable {
 
   private long cancellationFlagHandle = 0;
 
+  @UsedByReflection("nativeinterpreterwrapper_jni.cc")
   private long inferenceDurationNanoseconds = -1;
 
-  private @Nullable ByteBuffer modelByteBuffer;
+  private ByteBuffer modelByteBuffer;
 
   // Lazily constructed maps of input and output names to input and output Tensor indexes.
-  private @Nullable Map<String, Integer> inputsIndexes;
-  private @Nullable Map<String, Integer> outputsIndexes;
-  // Lazily constructed maps of tensor index to index in input and output indexes.
-  private Map<Integer, Integer> tensorToInputsIndexes;
-  private Map<Integer, Integer> tensorToOutputsIndexes;
+  private Map<String, Integer> inputsIndexes;
+  private Map<String, Integer> outputsIndexes;
 
   // A map from signature key to its native wrapper object.
   private Map<String, NativeSignatureRunnerWrapper> signatureRunnerMap;
 
   // Lazily constructed and populated arrays of input and output Tensor wrappers.
-  private @Nullable TensorImpl[] inputTensors;
-  private @Nullable TensorImpl[] outputTensors;
+  private TensorImpl[] inputTensors;
+  private TensorImpl[] outputTensors;
 
   // Whether subgraph's tensor memory space is allocated.
   private boolean isMemoryAllocated = false;
@@ -611,7 +616,7 @@ class NativeInterpreterWrapper implements AutoCloseable {
   private final List<Delegate> delegates = new ArrayList<>();
 
   // List of owned delegates that must be closed when the interpreter is closed.
-  private final List<AutoCloseable> ownedDelegates = new ArrayList<>();
+  private final List<Delegate> ownedDelegates = new ArrayList<>();
 
   private static native void run(long interpreterHandle, long errorHandle);
 
@@ -624,8 +629,6 @@ class NativeInterpreterWrapper implements AutoCloseable {
 
   private static native void setCancelled(
       long interpreterHandle, long cancellationFlagHandle, boolean value);
-
-  private static native int getOutputDataType(long interpreterHandle, int outputIdx);
 
   private static native boolean hasUnresolvedFlexOp(long interpreterHandle);
 
@@ -647,9 +650,6 @@ class NativeInterpreterWrapper implements AutoCloseable {
 
   private static native void allowBufferHandleOutput(long interpreterHandle, boolean allow);
 
-  private static native XnnpackDelegate createXNNPACKDelegate(
-      long interpreterHandle, long errorHandle, int state, int numThreads);
-
   private static native long createErrorReporter(int size);
 
   private static native long createModel(String modelPathOrBuffer, long errorHandle);
@@ -657,9 +657,12 @@ class NativeInterpreterWrapper implements AutoCloseable {
   private static native long createModelWithBuffer(ByteBuffer modelBuffer, long errorHandle);
 
   private static native long createInterpreter(
-      long modelHandle, long errorHandle, int numThreads, List<Long> delegateHandles);
-
-  private static native void resetVariableTensors(long interpreterHandle, long errorHandle);
+      long modelHandle,
+      long errorHandle,
+      int numThreads,
+      boolean useXnnpack,
+      boolean compressQuantizationZeroPoints,
+      List<Long> delegateHandles);
 
   private static native long createCancellationFlag(long interpreterHandle);
 

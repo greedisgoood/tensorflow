@@ -13,7 +13,7 @@
 # limitations under the License.
 # ==============================================================================
 """Test configs for pool operators."""
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 from tensorflow.lite.testing.zip_test_utils import create_tensor_data
 from tensorflow.lite.testing.zip_test_utils import ExtraConvertOptions
 from tensorflow.lite.testing.zip_test_utils import make_zip_of_tests
@@ -59,6 +59,8 @@ def make_pool3d_tests(pool_op):
           strides=parameters["strides"],
           data_format=parameters["data_format"],
           padding=parameters["padding"])
+      if 0 in out.shape.as_list():
+        raise ValueError("TFLite pooling tests require nonempty outputs")
       return [input_tensor], [out]
 
     def build_inputs(parameters, sess, inputs, outputs):

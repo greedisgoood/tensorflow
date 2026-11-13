@@ -6,7 +6,11 @@ tf_module {
   }
   member {
     name: "TestCase"
-    mtype: "<type \'type\'>"
+    mtype: "<class \'type\'>"
+  }
+  member {
+    name: "experimental"
+    mtype: "<class \'module\'>"
   }
   member_method {
     name: "assert_equal_graph_def"
@@ -47,6 +51,10 @@ tf_module {
   member_method {
     name: "is_built_with_xla"
     argspec: "args=[], varargs=None, keywords=None, defaults=None"
+  }
+  member_method {
+    name: "is_cpu_target_available"
+    argspec: "args=[\'target\'], varargs=None, keywords=None, defaults=None"
   }
   member_method {
     name: "is_gpu_available"

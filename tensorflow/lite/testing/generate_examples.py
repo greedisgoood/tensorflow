@@ -29,7 +29,7 @@ import argparse
 import os
 import sys
 
-import tensorflow.compat.v1 as tf
+import tensorflow as tf
 
 from tensorflow.lite.testing import generate_examples_lib
 from tensorflow.lite.testing import mlir_convert
@@ -150,9 +150,4 @@ def main(unused_args):
 if __name__ == "__main__":
   FLAGS, unparsed = parser.parse_known_args()
 
-  if unparsed:
-    print("\nGot the following unparsed args, %r please fix.\n" % unparsed +
-          "Usage: %s <path out> <zip file to generate>")
-    exit(1)
-  else:
-    tf.app.run(main=main, argv=[sys.argv[0]] + unparsed)
+  tf.compat.v1.app.run(main=main, argv=[sys.argv[0]] + unparsed)

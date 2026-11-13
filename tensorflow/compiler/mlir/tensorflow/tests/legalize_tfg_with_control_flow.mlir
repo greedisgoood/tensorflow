@@ -1,3 +1,17 @@
+// Copyright 2026 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
 // RUN: tf-opt -tfe-legalize-tfg %s | FileCheck %s
 
 module  {
@@ -8,8 +22,8 @@ module  {
     // CHECK: tf_executor.island(%[[CONTROL]]) wraps "tf.Const"()
     // CHECK: tf_executor.LoopCond
     // CHECK: tf_executor.Switch
-    // CHECK: tf_executor.Exit
     // CHECK: tf_executor.NextIteration.Sink[%[[TOKEN]]]
+    // CHECK: tf_executor.Exit
     %Const, %ctl = Const name("Const") {dtype = i32, value = dense<0> : tensor<i32>} : () -> (tensor<i32>)
     %Enter, %ctl_0 = Enter(%Const) name("while/Enter") {T = i32, frame_name = "while/while_context", is_constant = false, parallel_iterations = 10 : i64} : (tensor<i32>) -> (tensor<*xi32>)
     %NextIteration, %ctl_1 = NextIteration(%Add) name("while/NextIteration") {T = i32} : (tensor<*xi32>) -> (tensor<*xi32>)

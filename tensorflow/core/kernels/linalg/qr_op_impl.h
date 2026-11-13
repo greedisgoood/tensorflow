@@ -22,13 +22,14 @@ limitations under the License.
 // individual kernels. A separate file is used for each instantiated kernel to
 // improve compilation times.
 #include <algorithm>
+#include <limits>
 #include <numeric>
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
 #define EIGEN_USE_GPU
 #endif
 
-#include "third_party/eigen3/Eigen/QR"
+#include "Eigen/QR"  // from @eigen_archive
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/op_kernel.h"
 #include "tensorflow/core/framework/tensor.h"
@@ -40,7 +41,7 @@ limitations under the License.
 #include "tensorflow/core/platform/types.h"
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
-#include "third_party/eigen3/unsupported/Eigen/CXX11/Tensor"
+#include "unsupported/Eigen/CXX11/Tensor"  // from @eigen_archive
 #include "tensorflow/core/kernels/cwise_ops.h"
 #include "tensorflow/core/kernels/linalg/eye_functor.h"
 #include "tensorflow/core/kernels/linalg/matrix_band_part_op.h"
@@ -89,8 +90,9 @@ class QrOp : public LinearAlgebraOp<Scalar> {
                   2 * min_size * min_size * min_size / 3.;
     // TODO(jpoulson): Increase the cost if full_matrices is true in a manner
     // that reflects the algorithm used for the expansion.
-    return cost >= static_cast<double>(kint64max) ? kint64max
-                                                  : static_cast<int64_t>(cost);
+    return cost >= static_cast<double>(std::numeric_limits<int64_t>::max())
+               ? std::numeric_limits<int64_t>::max()
+               : static_cast<int64_t>(cost);
   }
 
   using Matrix = typename Base::Matrix;
@@ -122,7 +124,8 @@ class QrOp : public LinearAlgebraOp<Scalar> {
  private:
   bool full_matrices_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(QrOp);
+  QrOp(const QrOp&) = delete;
+  void operator=(const QrOp&) = delete;
 };
 
 #if GOOGLE_CUDA || TENSORFLOW_USE_ROCM
@@ -139,17 +142,16 @@ class QrOpGpu : public AsyncOpKernel {
   void ComputeAsync(OpKernelContext* context, DoneCallback done) final {
     const Tensor& input = context->input(0);
     const int ndims = input.dims();
+    // Validate inputs.
+    OP_REQUIRES_ASYNC(context, ndims >= 2,
+                      absl::InvalidArgumentError(absl::StrCat(
+                          "Input must have rank >= 2, got ", ndims)),
+                      done);
     const int64_t m = input.dim_size(ndims - 2);
     const int64_t n = input.dim_size(ndims - 1);
     const int64_t min_size = std::min(m, n);
     const int64_t batch_size =
         input.template flat_inner_dims<Scalar, 3>().dimension(0);
-
-    // Validate inputs.
-    OP_REQUIRES_ASYNC(
-        context, ndims >= 2,
-        errors::InvalidArgument("Input must have rank >= 2, got ", ndims),
-        done);
 
     // Allocate output.
     // If full_matrices_ is true then Q is m x m and R is m x n.
@@ -306,7 +308,8 @@ class QrOpGpu : public AsyncOpKernel {
  private:
   bool full_matrices_;
 
-  TF_DISALLOW_COPY_AND_ASSIGN(QrOpGpu);
+  QrOpGpu(const QrOpGpu&) = delete;
+  void operator=(const QrOpGpu&) = delete;
 };
 
 #endif  // GOOGLE_CUDA

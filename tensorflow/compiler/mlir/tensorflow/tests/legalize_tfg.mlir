@@ -1,12 +1,26 @@
+// Copyright 2026 Google Inc. All Rights Reserved.
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+// ==============================================================================
 // RUN: tf-opt -tfe-legalize-tfg %s | FileCheck %s
 
 // CHECK: module attributes {tf.versions = {bad_consumers = [], min_consumer = 12 : i32, producer = 919 : i32}}
 module  {
   // CHECK: tf_executor.graph
   tfg.graph #tf_type.version<producer = 919, min_consumer = 12> {
-    // CHECK: tf_executor.island wraps "tf.VarHandleOp"() {_mlir_name = "x", _output_shapes = [#tf_type.shape<>], allowed_devices = [], container = "a", device = "/device:CPU:0", dtype = i64, shape = #tf_type.shape<>, shared_name = "x"} : () -> tensor<!tf_type.resource<tensor<i64>>>
+    // CHECK: tf_executor.island wraps "tf.VarHandleOp"() <{container = "a", shared_name = "x"}> {_mlir_name = "x", _output_shapes = [#tf_type.shape<>], allowed_devices = [], device = "/device:CPU:0", dtype = i64, shape = #tf_type.shape<>} : () -> tensor<!tf_type.resource<tensor<i64>>>
     %VarHandleOp, %ctl = VarHandleOp device("/CPU:0") name("x") {_output_shapes = [#tf_type.shape<>], allowed_devices = [], container = "a", dtype = i64, shape = #tf_type.shape<>, shared_name = "x"} : () -> (tensor<!tf_type.resource<tensor<i64>>>)
-    // CHECK: tf_executor.island wraps "tf.LegacyCall"(%outputs, %outputs) {_disable_call_shape_inference = true, f = @test_func_name0} : (tensor<!tf_type.resource<tensor<i64>>>, tensor<!tf_type.resource<tensor<i64>>>) -> tensor<*x!tf_type.resource>
+    // CHECK: tf_executor.island wraps "tf.LegacyCall"(%outputs, %outputs) <{_disable_call_shape_inference = true, f = @test_func_name0}> : (tensor<!tf_type.resource<tensor<i64>>>, tensor<!tf_type.resource<tensor<i64>>>) -> tensor<*x!tf_type.resource>
     %test_func_name0, %ctl_0 = test_func_name0(%VarHandleOp, %VarHandleOp) name("called") {_disable_call_shape_inference = true, _output_shapes = [#tf_type.shape<*>]} : (tensor<!tf_type.resource<tensor<i64>>>, tensor<!tf_type.resource<tensor<i64>>>) -> (tensor<*x!tf_type.resource>)
     // CHECK: tf_executor.island wraps "tf._Retval"(%outputs_0) {T = !tf_type.resource, _mlir_name = "func_call", index = 0 : i64} : (tensor<*x!tf_type.resource>) -> ()
     %ctl_1 = _Retval(%test_func_name0) name("func_call") {T = !tf_type.resource, index = 0 : i64} : tensor<*x!tf_type.resource>

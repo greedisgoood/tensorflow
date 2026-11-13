@@ -15,6 +15,7 @@ limitations under the License.
 #include "tensorflow/lite/delegates/flex/delegate.h"
 
 #include <cstdint>
+#include <memory>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -32,7 +33,7 @@ class DelegateTest : public testing::FlexModelTest {
  public:
   DelegateTest() : delegate_(FlexDelegate::Create()) {
     flex_delegate_ = static_cast<FlexDelegate*>(delegate_->data_);
-    interpreter_.reset(new Interpreter(&error_reporter_));
+    interpreter_ = std::make_unique<Interpreter>(&error_reporter_);
   }
 
   ~DelegateTest() override {
@@ -229,7 +230,8 @@ TEST_F(DelegateTest, MultipleInterpretersSameDelegate) {
 
   // Create a new interpreter, inject into the test framework and build
   // a different graph using the *same* delegate.
-  std::unique_ptr<Interpreter> interpreter(new Interpreter(&error_reporter_));
+  std::unique_ptr<Interpreter> interpreter =
+      std::make_unique<Interpreter>(&error_reporter_);
   interpreter_.swap(interpreter);
   {
     AddTensors(10, {0}, {9}, kTfLiteFloat32, {3});

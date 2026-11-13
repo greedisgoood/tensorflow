@@ -13,11 +13,16 @@ See the License for the specific language governing permissions and
 limitations under the License.
 ==============================================================================*/
 
+#include <cstdint>
+#include <type_traits>
+
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "tensorflow/compiler/tf2xla/type_util.h"
 #include "tensorflow/compiler/tf2xla/xla_compiler.h"
 #include "tensorflow/compiler/tf2xla/xla_op_kernel.h"
 #include "tensorflow/compiler/tf2xla/xla_op_registry.h"
-#include "tensorflow/compiler/xla/client/xla_builder.h"
+#include "xla/hlo/builder/xla_builder.h"
 #include "tensorflow/core/framework/kernel_def_builder.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/types.pb.h"
@@ -31,11 +36,10 @@ DstT CastTo(SrcT src) {
 }
 
 template <typename DstT,
-          typename std::enable_if<std::is_same<DstT, Eigen::half>::value ||
-                                  std::is_same<DstT, bfloat16>::value>::type* =
-              nullptr>
+          std::enable_if_t<std::is_same_v<DstT, Eigen::half> ||
+                           std::is_same_v<DstT, bfloat16>>* = nullptr>
 DstT CastTo(int32_t src) {
-  return absl::bit_cast<DstT>(static_cast<uint16>(src));
+  return absl::bit_cast<DstT>(static_cast<uint16_t>(src));
 }
 
 // Returns scalar constant with the value in the tensor, if the given proto has
@@ -105,9 +109,9 @@ class ConstOp : public XlaOpKernel {
     proto_ = *proto;
     OP_REQUIRES(
         ctx, ctx->output_type(0) == proto_.dtype(),
-        errors::InvalidArgument("Type mismatch between value (",
-                                DataTypeString(proto_.dtype()), ") and dtype (",
-                                DataTypeString(ctx->output_type(0)), ")"));
+        absl::InvalidArgumentError(absl::StrCat(
+            "Type mismatch between value (", DataTypeString(proto_.dtype()),
+            ") and dtype (", DataTypeString(ctx->output_type(0)), ")")));
     OP_REQUIRES_OK(ctx, TensorShape::IsValidShape(proto_.tensor_shape()));
   }
 
@@ -127,14 +131,15 @@ class ConstOp : public XlaOpKernel {
 
     Tensor tensor(proto_.dtype());
     OP_REQUIRES(ctx, tensor.FromProto(cpu_allocator(), proto_),
-                errors::InvalidArgument("Cannot parse tensor from proto: ",
-                                        proto_.DebugString()));
+                absl::InvalidArgumentError(absl::StrCat(
+                    "Cannot parse tensor from proto: ", proto_.DebugString())));
     ctx->SetConstantOutput(0, tensor);
   }
 
  private:
   TensorProto proto_;
-  TF_DISALLOW_COPY_AND_ASSIGN(ConstOp);
+  ConstOp(const ConstOp&) = delete;
+  void operator=(const ConstOp&) = delete;
 };
 
 // XLA_* devices also register a "real" Const operator so we suppress the

@@ -16,6 +16,7 @@ limitations under the License.
 #define TENSORFLOW_LITE_KERNELS_INTERNAL_TEST_UTIL_H_
 
 #include <algorithm>
+#include <cmath>
 #include <functional>
 #include <iterator>
 #include <limits>
@@ -93,8 +94,8 @@ void FillRandom(std::vector<T>* vec) {
 // the depth) with higher values than the surround.
 template <typename T>
 void FillRandomSkyscraper(std::vector<T>* vec, int depth,
-                          double middle_proportion, uint8 middle_min,
-                          uint8 sides_max) {
+                          double middle_proportion, uint8_t middle_min,
+                          uint8_t sides_max) {
   for (auto base_it = std::begin(*vec); base_it != std::end(*vec);
        base_it += depth) {
     auto left_it = base_it + std::ceil(0.5 * depth * (1.0 - middle_proportion));

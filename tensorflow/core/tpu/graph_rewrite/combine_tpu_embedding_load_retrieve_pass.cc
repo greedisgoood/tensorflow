@@ -16,25 +16,34 @@ limitations under the License.
 #include "tensorflow/core/tpu/graph_rewrite/combine_tpu_embedding_load_retrieve_pass.h"
 
 #include <algorithm>
-#include <iterator>
+#include <array>
 #include <string>
 #include <utility>
 #include <vector>
 
 #include "absl/container/flat_hash_map.h"
 #include "absl/container/flat_hash_set.h"
+#include "absl/log/check.h"
+#include "absl/log/log.h"
+#include "absl/status/status.h"
+#include "absl/strings/str_cat.h"
 #include "absl/strings/str_format.h"
-#include "tensorflow/compiler/xla/status_macros.h"
+#include "absl/strings/string_view.h"
+#include "xla/status_macros.h"
+#include "xla/tsl/platform/errors.h"
+#include "xla/tsl/platform/logging.h"  // IWYU pragma: keep
 #include "tensorflow/core/common_runtime/optimization_registry.h"
 #include "tensorflow/core/framework/node_def.pb.h"
+#include "tensorflow/core/framework/node_def_util.h"
 #include "tensorflow/core/framework/tensor.pb.h"
 #include "tensorflow/core/framework/tensor_util.h"
+#include "tensorflow/core/framework/types.pb.h"
 #include "tensorflow/core/graph/graph.h"
 #include "tensorflow/core/graph/node_builder.h"
-#include "tensorflow/core/lib/core/errors.h"
-#include "tensorflow/core/lib/core/status.h"
 #include "tensorflow/core/lib/gtl/map_util.h"
-#include "tensorflow/core/platform/stream_executor.h"
+#include "tensorflow/core/platform/errors.h"
+#include "tensorflow/core/platform/status.h"
+#include "tensorflow/core/protobuf/tpu/optimization_parameters.pb.h"
 #include "tensorflow/core/protobuf/tpu/tpu_embedding_configuration.pb.h"
 #include "tensorflow/core/tpu/graph_rewrite/tpu_embedding_rewrite_pass_utils.h"
 #include "tensorflow/core/tpu/ops/tpu_embedding_ops.h"
@@ -60,7 +69,7 @@ absl::flat_hash_set<std::string> GetLoadRetrieveNodeNames() {
 }
 
 // Gets TPUEmbeddingConfiguration proto from embedding ops.
-Status GetTPUEmbeddingConfiguration(
+absl::Status GetTPUEmbeddingConfiguration(
     Graph* graph,
     tensorflow::tpu::TPUEmbeddingConfiguration* tpu_embedding_config,
     std::string* tpu_embedding_config_str) {
@@ -70,8 +79,8 @@ Status GetTPUEmbeddingConfiguration(
   for (Node* n : graph->nodes()) {
     const auto& node_name = n->op_def().name();
     if (n->IsOp() && (load_retrieve_nodes.contains(node_name) ||
-                      node_name == "_RecvTPUEmbeddingActivations" ||
-                      node_name == "_SendTPUEmbeddingGradients" ||
+                      node_name == "XlaRecvTPUEmbeddingActivations" ||
+                      node_name == "XlaSendTPUEmbeddingGradients" ||
                       node_name == "ConfigureTPUEmbedding")) {
       std::string test_tpu_embedding_config_str;
       TF_RETURN_IF_ERROR(
@@ -80,7 +89,7 @@ Status GetTPUEmbeddingConfiguration(
         if (load_retrieve_nodes.contains(node_name)) {
           continue;
         } else if (node_name == "ConfigureTPUEmbedding") {
-          return errors::InvalidArgument(
+          return absl::InvalidArgumentError(
               "ConfigureTPUEmbedding used but no configuration provided");
         }
       }
@@ -96,13 +105,13 @@ Status GetTPUEmbeddingConfiguration(
     }
   }
   if (!have_config) {
-    return errors::InvalidArgument("No TPU embedding config provided");
+    return absl::InvalidArgumentError("No TPU embedding config provided");
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Validates that all of the table names are distinct and non-empty.
-Status ValidateEmbeddingTableNames(
+absl::Status ValidateEmbeddingTableNames(
     const tensorflow::tpu::TPUEmbeddingConfiguration& tpu_embedding_config) {
   // Map from table names to first occurrences.
   TableNameToIntegerMap table_name_map;
@@ -111,17 +120,17 @@ Status ValidateEmbeddingTableNames(
     const auto& table = tpu_embedding_config.table_descriptor(table_id);
     const std::string& name = table.name();
     if (name.empty()) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           absl::StrFormat("Table %d has empty name string.", table_id));
     }
     bool inserted = gtl::InsertIfNotPresent(&table_name_map, name, table_id);
     if (!inserted) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           absl::StrFormat("Tables %d and %d have the same name '%s'.",
                           table_name_map[name], table_id, name.c_str()));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Gets single-table load-TPUEmbedding-parameter nodes in the graph.
@@ -181,7 +190,7 @@ absl::flat_hash_set<Node*> GetRetrieveNodes(Graph* graph) {
 //
 // Returns: Status (OK if successful; otherwise, an error status).
 //
-Status GetLoadOrRetrieveNodesByTable(
+absl::Status GetLoadOrRetrieveNodesByTable(
     const absl::flat_hash_set<Node*>& candidate_nodes,
     const tensorflow::tpu::TPUEmbeddingConfiguration& tpu_embedding_config,
     const TableNameToIntegerMap& table_name_to_id_map,
@@ -207,30 +216,30 @@ Status GetLoadOrRetrieveNodesByTable(
     std::string table_name;
     TF_RETURN_IF_ERROR(GetNodeAttr(n->def(), "table_name", &table_name));
     if (table_id < 0 && table_name.empty()) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "Neither table_id nor table_name attribute specified in node " +
           n->name());
     }
     if (table_id >= 0 && !table_name.empty()) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "Both table_id and table_name attributes specified in node " +
           n->name());
     }
     if (!table_name.empty()) {
       if (!table_name_to_id_map.contains(table_name)) {
-        return errors::InvalidArgument(
+        return absl::InvalidArgumentError(
             "Table name attribute refers to non-existent table '" + table_name +
             "' in node " + n->name());
       }
       table_id = table_name_to_id_map.at(table_name);
     }
     if (table_id < 0 || table_id >= num_tables) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           "table_id attribute out of range in node " + n->name());
     }
     if ((*nodes_per_table)[table_id] != nullptr) {
-      return errors::AlreadyExists("Found duplicate table_id caused by op " +
-                                   n->name());
+      return absl::AlreadyExistsError("Found duplicate table_id caused by op " +
+                                      n->name());
     }
     const auto alg = tpu_embedding_config.table_descriptor(table_id)
                          .optimization_parameters()
@@ -242,7 +251,7 @@ Status GetLoadOrRetrieveNodesByTable(
         absl::StrCat(expected_op_name, "GradAccumDebug");
     if (n->op_def().name() != expected_op_name &&
         n->op_def().name() != expected_op_name_debug) {
-      return errors::InvalidArgument(
+      return absl::InvalidArgumentError(
           absl::StrFormat("Node %s has op type %s instead of the name %s or %s "
                           "expected from the embedding layer configuration",
                           n->name(), n->op_def().name(), expected_op_name,
@@ -254,12 +263,12 @@ Status GetLoadOrRetrieveNodesByTable(
   }
   for (int table_id = 0; table_id < num_tables; ++table_id) {
     if ((*nodes_per_table)[table_id] == nullptr) {
-      return errors::NotFound(absl::StrFormat(
+      return absl::NotFoundError(absl::StrFormat(
           "Did not find per-table load or retrieve op for table '%s' ID(%d)",
           tpu_embedding_config.table_descriptor(table_id).name(), table_id));
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Pair of a node and an input or output number used to record edge endpoints.
@@ -273,7 +282,7 @@ using LoadCombinedParametersType =
 
 // Computes an array of ports containing the source of each table/parameter
 // combination. Fills in any unused ports with {nullptr, 0}.
-Status CombinePerTableParametersForLoad(
+absl::Status CombinePerTableParametersForLoad(
     const absl::flat_hash_set<Node*>& load_nodes,
     std::vector<Node*>* nodes_per_table,
     std::vector<bool>* is_debug_load_retrieve_node,
@@ -296,7 +305,7 @@ Status CombinePerTableParametersForLoad(
                                  .optimization_parameters();
 
     std::vector<tpu::StateVariableSpecification> state_variable_specs;
-    Status status = tpu::GetOptimizationAlgorithmStateVariables(
+    absl::Status status = tpu::GetOptimizationAlgorithmStateVariables(
         opt_params, &state_variable_specs);
 
     if (!status.ok()) {
@@ -330,20 +339,20 @@ Status CombinePerTableParametersForLoad(
           (state_variable_specs[parameter_num].has_user_defined() ||
            (*is_debug_load_retrieve_node)[table_id])) {
         if (node == nullptr) {
-          return errors::InvalidArgument(absl::StrFormat(
+          return absl::InvalidArgumentError(absl::StrFormat(
               "Found missing parameter in slot %d of table %s.", parameter_num,
               tpu_embedding_config.table_descriptor(table_id).name()));
         }
       } else {
         if (node != nullptr) {
-          return errors::InvalidArgument(absl::StrFormat(
+          return absl::InvalidArgumentError(absl::StrFormat(
               "Found extra parameter in slot %d of table %s.", parameter_num,
               tpu_embedding_config.table_descriptor(table_id).name()));
         }
       }
     }
   }
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 // Removes edges between individual load/retrieve nodes that are added by
@@ -371,14 +380,14 @@ void RemoveEdgesBetweenIndividualNodes(
 
 }  // namespace
 
-Status CombineTPUEmbeddingLoadRetrievePass::Run(
+absl::Status CombineTPUEmbeddingLoadRetrievePass::Run(
     const GraphOptimizationPassOptions& options) {
   VLOG(2) << "Starting CombineTPUEmbeddingLoadRetrievePass";
   Graph* graph = options.graph->get();
 
   tensorflow::tpu::TPUEmbeddingConfiguration tpu_embedding_config;
   std::string tpu_embedding_config_str;
-  const Status tpu_embedding_config_error = GetTPUEmbeddingConfiguration(
+  const absl::Status tpu_embedding_config_error = GetTPUEmbeddingConfiguration(
       graph, &tpu_embedding_config, &tpu_embedding_config_str);
   TF_RETURN_IF_ERROR(ValidateEmbeddingTableNames(tpu_embedding_config));
 
@@ -416,7 +425,7 @@ Status CombineTPUEmbeddingLoadRetrievePass::Run(
     auto it = load_devices.find(shard_id);
     if (it != load_devices.end()) {
       if (n->def().device() != it->second) {
-        return errors::InvalidArgument(absl::StrFormat(
+        return absl::InvalidArgumentError(absl::StrFormat(
             "Mismatched device name in load parameter op for shard %d: found "
             "%s and conflicting %s in node %s",
             shard_id, it->second, n->def().device(), n->name()));
@@ -432,7 +441,7 @@ Status CombineTPUEmbeddingLoadRetrievePass::Run(
     auto it = retrieve_devices.find(shard_id);
     if (it != retrieve_devices.end()) {
       if (n->def().device() != it->second) {
-        return errors::InvalidArgument(absl::StrFormat(
+        return absl::InvalidArgumentError(absl::StrFormat(
             "Mismatched device name in retrieve parameter op for shard %d: "
             "found %s and conflicting %s in node %s",
             shard_id, it->second, n->def().device(), n->name()));
@@ -605,7 +614,7 @@ Status CombineTPUEmbeddingLoadRetrievePass::Run(
       CHECK_NE(old_single_load_op, nullptr);  // Crash OK
       load_nodes.erase(old_single_load_op);
       NodeDef new_no_op_def = old_single_load_op->def();
-      new_no_op_def.set_op("NoOp");
+      ChangeToNoOp(&new_no_op_def);
       new_no_op_def.clear_input();
       new_no_op_def.clear_attr();
       Node* new_no_op;
@@ -737,7 +746,7 @@ Status CombineTPUEmbeddingLoadRetrievePass::Run(
   VLOG(2) << "Generated " << num_combined_nodes_added
           << " combined load or retrieve nodes.";
 
-  return Status::OK();
+  return absl::OkStatus();
 }
 
 }  // namespace tensorflow

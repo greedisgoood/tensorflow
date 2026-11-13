@@ -16,10 +16,17 @@ limitations under the License.
 #include "tensorflow/lite/delegates/xnnpack/test_util.h"
 
 #include <algorithm>
+#include <cstddef>
+#include <cstdint>
+#include <cstdlib>
 #include <limits>
+#include <vector>
 
+#include "absl/strings/match.h"
+#include "tensorflow/lite/core/api/profiler.h"
 #include "tensorflow/lite/kernels/internal/cppmath.h"
 #include "tensorflow/lite/kernels/internal/types.h"
+#include "tensorflow/lite/profiling/buffered_profiler.h"
 
 namespace tflite {
 namespace xnnpack {
@@ -68,8 +75,8 @@ float GetInt8QuantizationScaleFromMinMax(float min, float max) {
 
 float GetInt8QuantizationScale(const std::vector<float>& data) {
   return GetInt8QuantizationScaleFromMinMax(
-      *std::max_element(data.begin(), data.end()),
-      *std::min_element(data.begin(), data.end()));
+      *std::min_element(data.begin(), data.end()),
+      *std::max_element(data.begin(), data.end()));
 }
 
 std::vector<float> GetInt8QuantizationScalePerChannel(
@@ -99,6 +106,20 @@ std::vector<float> GetInt8QuantizationScalePerChannel(
     scale.push_back(GetInt8QuantizationScaleFromMinMax(min[idx], max[idx]));
   }
   return scale;
+}
+
+bool HasConvertNode(::tflite::profiling::BufferedProfiler* profiler) {
+  if (profiler == nullptr) return false;
+  auto events = profiler->GetProfileEvents();
+  for (const auto* event : events) {
+    if (event->event_type == ::tflite::Profiler::EventType::
+                                 DELEGATE_PROFILED_OPERATOR_INVOKE_EVENT) {
+      if (absl::StrContains(event->tag, "Convert")) {
+        return true;
+      }
+    }
+  }
+  return false;
 }
 
 }  // namespace xnnpack
